@@ -1,0 +1,17 @@
+# Example cellular target gNB. It needs its own RLS, N2 and N3 addresses.
+mcc: '001'
+mnc: '01'
+nci: '0x000000020'
+idLength: 32
+tac: 1
+linkIp: 10.1.1.14
+ngapIp: 10.100.1.5
+gtpIp: 10.100.1.5
+amfConfigs:
+  - address: 10.100.1.1
+    port: 38412
+slices:
+  - sst: 1
+ignoreStreamIds: false
+wifi: false
+phyLocation: {x: 180, y: 2, z: 0}

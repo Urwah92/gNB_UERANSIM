@@ -1,0 +1,17 @@
+# Simulated Wi-Fi AP/router. Use a separate AP lab from source-gnb.yml: both
+# examples use 10.1.1.10, so they cannot run together on the same interface.
+mcc: '001'
+mnc: '01'
+nci: '0x000000030'
+idLength: 32
+tac: 1
+linkIp: 10.1.1.10
+ngapIp: 10.100.1.4
+gtpIp: 10.100.1.4
+amfConfigs: []
+slices: []
+ignoreStreamIds: false
+wifi: true
+UeInterface: eth1
+nextHopInterface: eth2
+phyLocation: {x: 10, y: 2, z: 0}

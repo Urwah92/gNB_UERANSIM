@@ -1,0 +1,17 @@
+# Example cellular source gNB. Replace addresses with IPs assigned in this container.
+mcc: '001'
+mnc: '01'
+nci: '0x000000010'
+idLength: 32
+tac: 1
+linkIp: 10.1.1.10
+ngapIp: 10.100.1.4
+gtpIp: 10.100.1.4
+amfConfigs:
+  - address: 10.100.1.1
+    port: 38412
+slices:
+  - sst: 1
+ignoreStreamIds: false
+wifi: false
+phyLocation: {x: 10, y: 2, z: 0}
