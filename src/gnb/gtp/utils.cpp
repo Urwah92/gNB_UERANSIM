@@ -20,6 +20,7 @@ PduSessionTree::PduSessionTree() : mapByDownTeid{}, mapByUeId{}
 void PduSessionTree::insert(uint64_t session, uint32_t downTeid)
 {
     mapByDownTeid[downTeid] = session;
+    mapByUeId[GetUeId(session)][GetPsi(session)] = session;
 }
 
 uint64_t PduSessionTree::findByDownTeid(uint32_t teid)

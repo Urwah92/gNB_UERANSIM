@@ -9,6 +9,8 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -43,7 +45,13 @@ class RlsUdpTask : public NtsTask
     bool m_wifi;
     std::string m_ueInterface{};
     std::string m_interface{};
-    std::vector<int> releaseUeid{};
+    std::recursive_mutex m_stateMutex;
+    std::unordered_map<int, int64_t> m_releaseTimes;
+    std::unordered_map<std::string, int64_t> m_wifiLastSeen;
+    std::set<std::string> m_forwardedAddresses;
+    std::string m_chain;
+    bool m_firewallReady{};
+    bool m_ownsFirewall{};
 
 
   public:
@@ -59,6 +67,8 @@ class RlsUdpTask : public NtsTask
     void receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::RlsMessage> &&msg);
     void sendRlsPdu(const InetAddress &addr, const rls::RlsMessage &msg);
     void heartbeatCycle(int64_t time);
+    void setWifiForwarding(const std::string &address, bool enabled);
+    void clearWifiForwarding();
   public:
     void initialize(NtsTask *ctlTask);
     void send(int ueId, const rls::RlsMessage &msg);

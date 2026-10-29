@@ -1,22 +1,16 @@
-GREEN=\033[0;1;92m
-NC=\033[0m
+BUILD_DIR ?= build
+JOBS ?= 4
+CMAKE_ARGS ?=
 
-build: FORCE
-	rm -fr logs # Old version log files
-	mkdir -p build
-	rm -fr build/*
-	
-	# cmake -DCMAKE_BUILD_TYPE=Debug -G "CodeBlocks - Unix Makefiles" . -B cmake-build-debug
-	cmake -DCMAKE_BUILD_TYPE=Release -G "CodeBlocks - Unix Makefiles" . -B cmake-build-release
-	# cmake --build cmake-build-debug --target all
-	cmake --build cmake-build-release --target all
-	
-	cp cmake-build-release/nr-gnb build/
-	cp cmake-build-release/nr-ue build/
-	cp cmake-build-release/nr-cli build/
-	cp cmake-build-release/libdevbnd.so build/
-	cp tools/nr-binder build/
+.PHONY: build test clean
 
-	@printf "${GREEN}UERANSIM successfully built.${NC}\n"
+build:
+	cmake -S . -B $(BUILD_DIR) $(CMAKE_ARGS)
+	cmake --build $(BUILD_DIR) --parallel $(JOBS)
+	install -m 755 tools/nr-binder $(BUILD_DIR)/nr-binder
 
-FORCE:
+test: build
+	ctest --test-dir $(BUILD_DIR) --output-on-failure
+
+clean:
+	cmake --build $(BUILD_DIR) --target clean

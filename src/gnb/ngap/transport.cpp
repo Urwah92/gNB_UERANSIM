@@ -62,7 +62,7 @@ static e_ASN_NGAP_Criticality FindCriticalityOfUserIe(ASN_NGAP_NGAP_PDU *pdu, AS
                 procedureCode == ASN_NGAP_ProcedureCode_id_HandoverPreparation)
                 return ASN_NGAP_Criticality_reject;
         }
-        
+
         if (procedureCode == ASN_NGAP_ProcedureCode_id_PDUSessionResourceNotify ||
             procedureCode == ASN_NGAP_ProcedureCode_id_PDUSessionResourceModifyIndication ||
             procedureCode == ASN_NGAP_ProcedureCode_id_RRCInactiveTransitionReport ||
@@ -103,7 +103,7 @@ void NgapTask::sendNgapNonUe(int associatedAmf, ASN_NGAP_NGAP_PDU *pdu)
     }
 
     char errorBuffer[1024];
-    size_t len;
+    size_t len = sizeof(errorBuffer);
 
     if (asn_check_constraints(&asn_DEF_ASN_NGAP_NGAP_PDU, pdu, errorBuffer, &len) != 0)
     {
@@ -138,284 +138,113 @@ void NgapTask::sendNgapNonUe(int associatedAmf, ASN_NGAP_NGAP_PDU *pdu)
     asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
 }
 
-void NgapTask::sendNgapUeAssociatedPathSwitchReq(int ueId, ASN_NGAP_NGAP_PDU *pdu, const PduSessionResource& pduSessionResource,
-                const nas::IEUeSecurityCapability ueSecurityCapability)
+bool NgapTask::sendNgapUeAssociatedPathSwitchReq(int ueId, ASN_NGAP_NGAP_PDU *rawPdu,
+                                               const PduSessionResource &session,
+                                               const nas::IEUeSecurityCapability capability)
 {
-    // Create PDUSessionResourceToBeSwitchedDLList
-    auto pduList = std::make_unique<ASN_NGAP_PDUSessionResourceToBeSwitchedDLList>();
-    pduList->list.size = 1;  // Assuming only one PDU session resource for now
-    pduList->list.count = 0;
-    pduList->list.array = new ASN_NGAP_PDUSessionResourceToBeSwitchedDLItem*[pduList->list.size];
-    if (!pduList->list.array) {
-        m_logger->err("Failed to allocate memory for PDUSessionResourceToBeSwitchedDLList");
-        return;
-    }
-
-    if (!pduList->list.array) {
-        m_logger->err("Failed to allocate memory for PDUSessionResourceToBeSwitchedDLList");
-        return;
-    }
-
-    auto *item = asn::New<ASN_NGAP_PDUSessionResourceToBeSwitchedDLItem>();
-    if (!item) {
-        m_logger->err("Failed to allocate memory for PDUSessionResourceToBeSwitchedDLItem");
-        return;
-    }
-    item->pDUSessionID = pduSessionResource.psi;
-
-    // Initialize PathSwitchRequestTransfer
-    auto *pathSwitchRequestTransfer = asn::New<ASN_NGAP_PathSwitchRequestTransfer>();
-    if (!pathSwitchRequestTransfer) {
-        m_logger->err("Failed to allocate memory for PathSwitchRequestTransfer");
-        return;
-    }
-    pathSwitchRequestTransfer->dL_NGU_UP_TNLInformation.present = ASN_NGAP_UPTransportLayerInformation_PR_gTPTunnel;
-    pathSwitchRequestTransfer->dL_NGU_UP_TNLInformation.choice.gTPTunnel = asn::New<ASN_NGAP_GTPTunnel>();
-    // Access the GTP Tunnel directly from pathSwitchRequestTransfer
-    auto* gTPTunnel = pathSwitchRequestTransfer->dL_NGU_UP_TNLInformation.choice.gTPTunnel;
-
-    if (!gTPTunnel) {
-        m_logger->err("Failed to allocate memory for GTPTunnel inside PathSwitchRequestTransfer");
-        return;
-    }
-
-    // Set the transport layer address
-    const auto &address = pduSessionResource.downTunnel.address;
-    if (address.length() == 0) {
-        m_logger->err("Invalid address length for GTP Tunnel");
-        return;
-    }
-
-    asn::SetBitString(gTPTunnel->transportLayerAddress, address);
-    asn::SetOctetString4(gTPTunnel->gTP_TEID, (octet4)pduSessionResource.downTunnel.teid);
- 
-    
-    // Access the QosFlowAcceptedList directly from pathSwitchRequestTransfer
-    ASN_NGAP_QosFlowAcceptedList &qosFlowAcceptedList = pathSwitchRequestTransfer->qosFlowAcceptedList;
-
-    // Ensure QoS flow list count is valid
-    if (pduSessionResource.qosFlows->list.count == 0) {
-        m_logger->warn("No QoS flows available to be accepted");
-        return;
-    }
-
-    // Set the count and allocate memory for the list
-    qosFlowAcceptedList.list.count = pduSessionResource.qosFlows->list.count;
-    qosFlowAcceptedList.list.size = qosFlowAcceptedList.list.count;
-    qosFlowAcceptedList.list.array = (ASN_NGAP_QosFlowAcceptedItem **)calloc(
-        qosFlowAcceptedList.list.size, sizeof(ASN_NGAP_QosFlowAcceptedItem *)
-    );
-
-    if (qosFlowAcceptedList.list.array == nullptr) {
-        m_logger->err("Failed to allocate memory for QosFlowAcceptedList array");
-        return;
-    }
-
-
-    // Add QoS Flow Accepted Items
-    for (int i = 0; i < pduSessionResource.qosFlows->list.count; ++i) {
-        // Retrieve the QoS Flow Setup Request Item from the PDU session resource
-        const auto &qosFlowSetupRequestItem = *pduSessionResource.qosFlows->list.array[i];
-
-        // Allocate memory for an ASN_NGAP_QosFlowAcceptedItem
-        auto *acceptedItem = asn::New<ASN_NGAP_QosFlowAcceptedItem>();
-        if (!acceptedItem) {
-            m_logger->err("Failed to allocate memory for QosFlowAcceptedItem");
-            return;
-        }
-
-        // Copy QoS Flow Identifier
-        acceptedItem->qosFlowIdentifier = qosFlowSetupRequestItem.qosFlowIdentifier;
-
-        // Add to list using memcpy
-        qosFlowAcceptedList.list.array[i] = static_cast<ASN_NGAP_QosFlowAcceptedItem *>(malloc(sizeof(ASN_NGAP_QosFlowAcceptedItem)));
-        if (!qosFlowAcceptedList.list.array[i]) {
-            m_logger->err("Failed to allocate memory for QosFlowAcceptedItem in the list");
-            return;
-        }
-        *qosFlowAcceptedList.list.array[i] = *acceptedItem;
-
-        if (qosFlowAcceptedList.list.array[i] == nullptr) {
-            return;
-        }
-
-        // Free the temporary acceptedItem
-        free(acceptedItem);
-    }
-
-    char error_buffer[128]; // Buffer to store error message
-    size_t error_buffer_size = sizeof(error_buffer);
-
-    int constraint_check = asn_check_constraints(
-        &asn_DEF_ASN_NGAP_PathSwitchRequestTransfer,
-        pathSwitchRequestTransfer,
-        error_buffer,
-        &error_buffer_size
-    );
-
-    if (constraint_check != 0) {
-        return;
-    }
-
-    ssize_t encoded_length;
-    uint8_t* pathSwitchRequestTransfer_buffer = nullptr;
-    if (!ngap_encode::Encode(asn_DEF_ASN_NGAP_PathSwitchRequestTransfer, pathSwitchRequestTransfer, encoded_length, pathSwitchRequestTransfer_buffer)) {
-        m_logger->err("Failed to encode PathSwitchRequestTransfer");
-        return;
-    }
-    asn::SetOctetString(item->pathSwitchRequestTransfer, OctetString::FromArray(pathSwitchRequestTransfer_buffer, encoded_length));
-    free(pathSwitchRequestTransfer);
-
-
-    pduList->list.array[0] = item;
-    pduList->list.count = 1;
-
-    // Find UE and AMF contexts
+    auto pdu = asn::WrapUnique(rawPdu, asn_DEF_ASN_NGAP_NGAP_PDU);
     auto *ue = findUeContext(ueId);
-    if (ue == nullptr)
+    auto *amf = ue ? findAmfContext(ue->associatedAmfId) : nullptr;
+    if (!amf || !session.qosFlows || session.qosFlows->list.count < 1 ||
+        (session.downTunnel.address.length() != 4 && session.downTunnel.address.length() != 16))
+        return false;
+
+    auto transfer = asn::WrapUnique(asn::New<ASN_NGAP_PathSwitchRequestTransfer>(),
+                                    asn_DEF_ASN_NGAP_PathSwitchRequestTransfer);
+    transfer->dL_NGU_UP_TNLInformation.present = ASN_NGAP_UPTransportLayerInformation_PR_gTPTunnel;
+    auto *tunnel = asn::New<ASN_NGAP_GTPTunnel>();
+    transfer->dL_NGU_UP_TNLInformation.choice.gTPTunnel = tunnel;
+    asn::SetBitString(tunnel->transportLayerAddress, session.downTunnel.address);
+    asn::SetOctetString4(tunnel->gTP_TEID, octet4{session.downTunnel.teid});
+    for (int i = 0; i < session.qosFlows->list.count; ++i)
     {
-        asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
-        return;
+        const auto *flow = session.qosFlows->list.array[i];
+        if (!flow || flow->qosFlowIdentifier < 0 || flow->qosFlowIdentifier > 63)
+            return false;
+        auto *accepted = asn::New<ASN_NGAP_QosFlowAcceptedItem>();
+        accepted->qosFlowIdentifier = flow->qosFlowIdentifier;
+        asn::SequenceAdd(transfer->qosFlowAcceptedList, accepted);
     }
+    auto encodedTransfer = ngap_encode::EncodeS(asn_DEF_ASN_NGAP_PathSwitchRequestTransfer, transfer.get());
+    if (encodedTransfer.length() == 0)
+        return false;
 
-    auto *amf = findAmfContext(ue->associatedAmfId);
-    if (amf == nullptr)
+    auto &request = pdu->choice.initiatingMessage->value.choice.PathSwitchRequest;
+    auto *ran = asn::New<ASN_NGAP_PathSwitchRequestIEs>();
+    ran->id = ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID;
+    ran->criticality = ASN_NGAP_Criticality_reject;
+    ran->value.present = ASN_NGAP_PathSwitchRequestIEs__value_PR_RAN_UE_NGAP_ID;
+    ran->value.choice.RAN_UE_NGAP_ID = ue->ranUeNgapId;
+    asn::ngap::AddProtocolIe(request, ran);
+
+    auto *source = asn::New<ASN_NGAP_PathSwitchRequestIEs>();
+    source->id = ASN_NGAP_ProtocolIE_ID_id_SourceAMF_UE_NGAP_ID;
+    source->criticality = ASN_NGAP_Criticality_reject;
+    source->value.present = ASN_NGAP_PathSwitchRequestIEs__value_PR_AMF_UE_NGAP_ID;
+    asn::SetSigned64(ue->amfUeNgapId, source->value.choice.AMF_UE_NGAP_ID);
+    asn::ngap::AddProtocolIe(request, source);
+
+    auto *location = asn::New<ASN_NGAP_PathSwitchRequestIEs>();
+    location->id = ASN_NGAP_ProtocolIE_ID_id_UserLocationInformation;
+    location->criticality = ASN_NGAP_Criticality_ignore;
+    location->value.present = ASN_NGAP_PathSwitchRequestIEs__value_PR_UserLocationInformation;
+    auto &locationValue = location->value.choice.UserLocationInformation;
+    locationValue.present = ASN_NGAP_UserLocationInformation_PR_userLocationInformationNR;
+    locationValue.choice.userLocationInformationNR = asn::New<ASN_NGAP_UserLocationInformationNR>();
+    auto &nr = *locationValue.choice.userLocationInformationNR;
+    ngap_utils::ToPlmnAsn_Ref(m_base->config->plmn, nr.nR_CGI.pLMNIdentity);
+    asn::SetBitStringLong<36>(m_base->config->nci, nr.nR_CGI.nRCellIdentity);
+    ngap_utils::ToPlmnAsn_Ref(m_base->config->plmn, nr.tAI.pLMNIdentity);
+    asn::SetOctetString3(nr.tAI.tAC, octet3{m_base->config->tac});
+    asn::ngap::AddProtocolIe(request, location);
+
+    auto *security = asn::New<ASN_NGAP_PathSwitchRequestIEs>();
+    security->id = ASN_NGAP_ProtocolIE_ID_id_UESecurityCapabilities;
+    security->criticality = ASN_NGAP_Criticality_ignore;
+    security->value.present = ASN_NGAP_PathSwitchRequestIEs__value_PR_UESecurityCapabilities;
+    OctetString algorithms;
+    nas::IEUeSecurityCapability::Encode(capability, algorithms);
+    auto &caps = security->value.choice.UESecurityCapabilities;
+    const uint8_t nrEncryption[] = {algorithms.get(0), 0};
+    const uint8_t nrIntegrity[] = {algorithms.get(1), 0};
+    const uint8_t eutraEncryption[] = {algorithms.get(2), 0};
+    const uint8_t eutraIntegrity[] = {algorithms.get(3), 0};
+    asn::SetBitString(caps.nRencryptionAlgorithms, OctetString::FromArray(nrEncryption, 2));
+    asn::SetBitString(caps.nRintegrityProtectionAlgorithms, OctetString::FromArray(nrIntegrity, 2));
+    asn::SetBitString(caps.eUTRAencryptionAlgorithms, OctetString::FromArray(eutraEncryption, 2));
+    asn::SetBitString(caps.eUTRAintegrityProtectionAlgorithms, OctetString::FromArray(eutraIntegrity, 2));
+    asn::ngap::AddProtocolIe(request, security);
+
+    auto *sessions = asn::New<ASN_NGAP_PathSwitchRequestIEs>();
+    sessions->id = ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceToBeSwitchedDLList;
+    sessions->criticality = ASN_NGAP_Criticality_reject;
+    sessions->value.present = ASN_NGAP_PathSwitchRequestIEs__value_PR_PDUSessionResourceToBeSwitchedDLList;
+    auto *item = asn::New<ASN_NGAP_PDUSessionResourceToBeSwitchedDLItem>();
+    item->pDUSessionID = session.psi;
+    asn::SetOctetString(item->pathSwitchRequestTransfer, encodedTransfer);
+    asn::SequenceAdd(sessions->value.choice.PDUSessionResourceToBeSwitchedDLList, item);
+    asn::ngap::AddProtocolIe(request, sessions);
+
+    char error[1024];
+    size_t errorSize = sizeof(error);
+    if (asn_check_constraints(&asn_DEF_ASN_NGAP_NGAP_PDU, pdu.get(), error, &errorSize) != 0)
     {
-        asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
-        return;
-    }
-
-    // Insert UE-related information elements
-    {
-        asn::ngap::AddProtocolIeIfUsable(
-            *pdu, asn_DEF_ASN_NGAP_RAN_UE_NGAP_ID, ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID,
-            FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_RAN_UE_NGAP_ID),
-            [ue](void *mem) { *reinterpret_cast<ASN_NGAP_RAN_UE_NGAP_ID_t *>(mem) = ue->ranUeNgapId; });
-        // AMF UE NGAP ID
-        if (ue->amfUeNgapId > 0)
-        {
-            asn::ngap::AddProtocolIeIfUsable(
-                *pdu, asn_DEF_ASN_NGAP_AMF_UE_NGAP_ID, ASN_NGAP_ProtocolIE_ID_id_SourceAMF_UE_NGAP_ID,
-                FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_AMF_UE_NGAP_ID), [ue](void *mem) {
-                    auto &id = *reinterpret_cast<ASN_NGAP_AMF_UE_NGAP_ID_t *>(mem);
-                    asn::SetSigned64(ue->amfUeNgapId, id);
-                });
-        }
-
-        asn::ngap::AddProtocolIeIfUsable(
-            *pdu, asn_DEF_ASN_NGAP_UserLocationInformation, ASN_NGAP_ProtocolIE_ID_id_UserLocationInformation,
-            FindCriticalityOfUserIe(pdu, ASN_NGAP_ProtocolIE_ID_id_UserLocationInformation), [this](void *mem) {
-                auto *loc = reinterpret_cast<ASN_NGAP_UserLocationInformation *>(mem);
-                loc->present = ASN_NGAP_UserLocationInformation_PR_userLocationInformationNR;
-                loc->choice.userLocationInformationNR = asn::New<ASN_NGAP_UserLocationInformationNR>();
-
-                auto &nr = loc->choice.userLocationInformationNR;
-                nr->timeStamp = asn::New<ASN_NGAP_TimeStamp_t>();
-
-                ngap_utils::ToPlmnAsn_Ref(m_base->config->plmn, nr->nR_CGI.pLMNIdentity);
-                asn::SetBitStringLong<36>(m_base->config->nci, nr->nR_CGI.nRCellIdentity);
-                ngap_utils::ToPlmnAsn_Ref(m_base->config->plmn, nr->tAI.pLMNIdentity);
-                asn::SetOctetString3(nr->tAI.tAC, octet3{m_base->config->tac});
-                asn::SetOctetString4(*nr->timeStamp, octet4{utils::CurrentTimeStamp().seconds32()});
-            });
-
-    // Add UE Security Capabilities IE
-    asn::ngap::AddProtocolIeIfUsable(*pdu, asn_DEF_ASN_NGAP_UESecurityCapabilities, 
-                                    ASN_NGAP_ProtocolIE_ID_id_UESecurityCapabilities, ASN_NGAP_Criticality_ignore, 
-                                    [this, &ueSecurityCapability](void *mem) {
-        // Interpret memory as UESecurityCapabilities ASN.1 structure
-        auto &secCap = *reinterpret_cast<ASN_NGAP_UESecurityCapabilities_t *>(mem);
-
-        // Prepare buffers for encryption and integrity protection algorithms
-        uint8_t encryptionAlgorithms[2] = {0};
-        uint8_t integrityProtectionAlgorithms[2] = {0};
-
-        // Populate the NR encryption algorithms (e.g., EA0, 128-EA1, etc.)
-        encryptionAlgorithms[0] |= (ueSecurityCapability.b_5G_EA0 << 7) |
-                                (ueSecurityCapability.b_128_5G_EA1 << 6) |
-                                (ueSecurityCapability.b_128_5G_EA2 << 5) |
-                                (ueSecurityCapability.b_128_5G_EA3 << 4) |
-                                (ueSecurityCapability.b_5G_EA4 << 3) |
-                                (ueSecurityCapability.b_5G_EA5 << 2) |
-                                (ueSecurityCapability.b_5G_EA6 << 1) |
-                                (ueSecurityCapability.b_5G_EA7);
-
-        integrityProtectionAlgorithms[0] |= (ueSecurityCapability.b_5G_IA0 << 7) |
-                                            (ueSecurityCapability.b_128_5G_IA1 << 6) |
-                                            (ueSecurityCapability.b_128_5G_IA2 << 5) |
-                                            (ueSecurityCapability.b_128_5G_IA3 << 4) |
-                                            (ueSecurityCapability.b_5G_IA4 << 3) |
-                                            (ueSecurityCapability.b_5G_IA5 << 2) |
-                                            (ueSecurityCapability.b_5G_IA6 << 1) |
-                                            (ueSecurityCapability.b_5G_IA7);
-
-        // Memory allocation for ASN.1 fields (ensure you allocate memory dynamically if needed)
-        secCap.nRencryptionAlgorithms.buf = (uint8_t *)calloc(1, sizeof(encryptionAlgorithms));
-        if (secCap.nRencryptionAlgorithms.buf == nullptr) {
-            throw std::runtime_error("Memory allocation failed for NR encryption algorithms");
-        }
-        memcpy(secCap.nRencryptionAlgorithms.buf, encryptionAlgorithms, sizeof(encryptionAlgorithms));
-        secCap.nRencryptionAlgorithms.size = sizeof(encryptionAlgorithms);
-        secCap.nRencryptionAlgorithms.bits_unused = 0;
-
-        // Memory allocation for integrity protection algorithms
-        secCap.nRintegrityProtectionAlgorithms.buf = (uint8_t *)calloc(1, sizeof(integrityProtectionAlgorithms));
-        if (secCap.nRintegrityProtectionAlgorithms.buf == nullptr) {
-            throw std::runtime_error("Memory allocation failed for NR integrity protection algorithms");
-        }
-        memcpy(secCap.nRintegrityProtectionAlgorithms.buf, integrityProtectionAlgorithms, sizeof(integrityProtectionAlgorithms));
-        secCap.nRintegrityProtectionAlgorithms.size = sizeof(integrityProtectionAlgorithms);
-        secCap.nRintegrityProtectionAlgorithms.bits_unused = 0;
-
-    });
-
-
-    // Add the PDUSessionResourceToBeSwitchedDLList IE
-    asn::ngap::AddProtocolIeIfUsable(*pdu, asn_DEF_ASN_NGAP_PDUSessionResourceToBeSwitchedDLList, 
-                                        ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceToBeSwitchedDLList, 
-                                        ASN_NGAP_Criticality_reject, [pduList = std::make_shared<ASN_NGAP_PDUSessionResourceToBeSwitchedDLList>(*pduList)](void *mem) {
-            auto *list = reinterpret_cast<ASN_NGAP_PDUSessionResourceToBeSwitchedDLList *>(mem);
-            *list = *pduList;
-        });
-    }
-     /* Encode and send the PDU */
-
-    char errorBuffer[1024];
-    size_t len;
-
-    if (asn_check_constraints(&asn_DEF_ASN_NGAP_NGAP_PDU, pdu, errorBuffer, &len) != 0)
-    {
-        m_logger->err("NGAP PDU ASN constraint validation failed");
-        asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
-        return;
+        m_logger->err("Path Switch Request ASN constraint validation failed: %s", error);
+        return false;
     }
     ssize_t encoded;
     uint8_t *buffer;
-    if (!ngap_encode::Encode(asn_DEF_ASN_NGAP_NGAP_PDU, pdu, encoded, buffer))
-        m_logger->err("NGAP APER encoding failed");
-    else
+    if (!ngap_encode::Encode(asn_DEF_ASN_NGAP_NGAP_PDU, pdu.get(), encoded, buffer))
     {
-        auto msg = std::make_unique<NmGnbSctp>(NmGnbSctp::SEND_MESSAGE);
-        msg->clientId = amf->ctxId;
-        msg->stream = ue->uplinkStream;
-        msg->buffer = UniqueBuffer{buffer, static_cast<size_t>(encoded)};
-        m_base->sctpTask->push(std::move(msg));
-        if (m_base->nodeListener)
-        {
-            std::string xer = ngap_encode::EncodeXer(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
-            if (xer.length() > 0)
-            {
-                m_base->nodeListener->onSend(app::NodeType::GNB, m_base->config->name, app::NodeType::AMF, amf->amfName,
-                                             app::ConnectionType::NGAP, xer);
-            }
-        }
-
+        m_logger->err("Path Switch Request encoding failed");
+        return false;
     }
-    asn::Free(asn_DEF_ASN_NGAP_NGAP_PDU, pdu);
-
+    auto message = std::make_unique<NmGnbSctp>(NmGnbSctp::SEND_MESSAGE);
+    message->clientId = amf->ctxId;
+    message->stream = ue->uplinkStream;
+    message->buffer = UniqueBuffer{buffer, static_cast<size_t>(encoded)};
+    return m_base->sctpTask->push(std::move(message));
 }
-
-
 
 void NgapTask::sendNgapUeAssociated(int ueId, ASN_NGAP_NGAP_PDU *pdu)
 {
@@ -471,7 +300,7 @@ void NgapTask::sendNgapUeAssociated(int ueId, ASN_NGAP_NGAP_PDU *pdu)
     /* Encode and send the PDU */
 
     char errorBuffer[1024];
-    size_t len;
+    size_t len = sizeof(errorBuffer);
 
     if (asn_check_constraints(&asn_DEF_ASN_NGAP_NGAP_PDU, pdu, errorBuffer, &len) != 0)
     {
@@ -604,6 +433,9 @@ void NgapTask::handleSctpMessage(int amfId, uint16_t stream, const UniqueBuffer 
         auto value = pdu->choice.unsuccessfulOutcome->value;
         switch (value.present)
         {
+        case ASN_NGAP_UnsuccessfulOutcome__value_PR_PathSwitchRequestFailure:
+            receivePathSwitchFailure(amf->ctxId, &value.choice.PathSwitchRequestFailure);
+            break;
         case ASN_NGAP_UnsuccessfulOutcome__value_PR_NGSetupFailure:
             receiveNgSetupFailure(amf->ctxId, &value.choice.NGSetupFailure);
             break;

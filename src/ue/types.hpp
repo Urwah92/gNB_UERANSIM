@@ -14,6 +14,7 @@
 #include <atomic>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <set>
 #include <unordered_set>
@@ -115,11 +116,14 @@ struct UeConfig
     std::optional<std::string> tunName{};
     //**My Edition**//
     std::vector<Vector3> phyLocations{};
-    float velocity;
-    bool wifi;
+    float velocity = 0.0f;
+    bool wifi = false;
     std::string staticIP{};
     std::string interface{};
-    std::string mobPattern{};
+    std::string mobPattern = "linear";
+    // Empty disables host traffic shaping. Set only inside an isolated lab network.
+    std::string trafficShapingInterface{};
+    int wifiRoutingTable = 10001;
     struct
     {
         bool mps{};
@@ -203,6 +207,21 @@ struct UeSharedContext
 struct RlsSharedContext
 {
     std::atomic<uint64_t> sti{};
+    std::mutex securityMutex;
+    nas::IEUeSecurityCapability ueSecurityCapability{};
+};
+
+struct WifiCandidate
+{
+    std::string address;
+    int dbm{};
+    int64_t lastSeen{};
+};
+
+struct WifiState
+{
+    std::mutex mutex;
+    std::vector<WifiCandidate> candidates;
 };
 
 struct TaskBase
@@ -215,6 +234,7 @@ struct TaskBase
     NtsTask *cliCallbackTask{};
 
     UeSharedContext shCtx{};
+    WifiState wifiState{};
 
     UeAppTask *appTask{};
     NasTask *nasTask{};

@@ -20,6 +20,10 @@
 namespace rls
 {
 
+// Version of the private SESSION_TRANSMISSION payload (not an XnAP message).
+// Version 1 uses a 64-bit AMF UE NGAP ID and an explicit security-capability length.
+inline constexpr uint8_t SessionWireVersion = 1;
+
 enum class EMessageType : uint8_t
 {
     RESERVED = 0,
@@ -53,6 +57,8 @@ struct RlsMessage
     explicit RlsMessage(EMessageType msgType, uint64_t sti) : msgType(msgType), sti(sti)
     {
     }
+
+    virtual ~RlsMessage() = default;
 };
 
 struct RlsHeartBeat : RlsMessage
@@ -90,11 +96,11 @@ struct RlsSessionTransmission : RlsMessage
     EPduType pduType{};
     uint32_t pduId{};
     uint32_t payload{};
-    uint32_t amfId{};
+    uint64_t amfId{};
 
     std::unique_ptr<nr::gnb::PduSessionResource> m_pduSession;
     nas::IEUeSecurityCapability m_ueSecurityCapability;
-    bool check;
+    bool check{};
 
     explicit RlsSessionTransmission(uint64_t sti) : RlsMessage(EMessageType::SESSION_TRANSMISSION, sti)
     {
@@ -106,7 +112,7 @@ struct RlsXnSessionTransmission : RlsMessage
     EPduType pduType{};
     uint32_t pduId{};
     uint32_t payload{};
-    uint32_t amfId{};
+    uint64_t amfId{};
 
     std::unique_ptr<nr::gnb::PduSessionResource> m_pduSession;
 

@@ -7,13 +7,13 @@
 //
 
 #include "task.hpp"
-#include <gnb/rls/udp_task.cpp>
+#include <gnb/rls/udp_task.hpp>
 #include <gnb/gtp/task.hpp>
 #include <gnb/rrc/task.hpp>
 #include <gnb/ngap/task.hpp>
 #include <utils/common.hpp>
 #include <utils/random.hpp>
-#include <cstring> 
+#include <cstring>
 #include <unistd.h>
 
 namespace nr::gnb
@@ -34,7 +34,6 @@ void GnbRlsTask::onStart()
 {
     m_udpTask->start();
     m_ctlTask->start();
-    m_wifiCounter = 0;
 
 }
 
@@ -57,15 +56,22 @@ void GnbRlsTask::onLoop()
             break;
         }
         case NmGnbRlsToRls::SIGNAL_LOST: {
+            // Weak-signal heartbeats remain live. This event means the peer actually stopped heartbeating.
             m_logger->debug("UE[%d] signal lost", w.ueId);
-            if (m_base->config->wifi == true)
+            if (!m_base->config->wifi)
             {
-                if (NtsTask::flag == true && m_wifiCounter > 15)
-                {
-                    m_wifiCounter=0;
-                }
-                m_wifiCounter++;
+                auto lost = std::make_unique<NmGnbRlsToRrc>(NmGnbRlsToRrc::SIGNAL_LOST);
+                lost->ueId = w.ueId;
+                lost->psi = 0;
+                m_base->rrcTask->push(std::move(lost));
             }
+            break;
+        }
+        case NmGnbRlsToRls::SESSION_RELEASE: {
+            auto release = std::make_unique<NmGnbRlsToNgap>(NmGnbRlsToNgap::SESSION_RELEASE);
+            release->ueId = w.ueId;
+            release->psi = w.psi;
+            m_base->ngapTask->push(std::move(release));
             break;
         }
         case NmGnbRlsToRls::UPLINK_DATA: {
@@ -178,8 +184,8 @@ void GnbRlsTask::onLoop()
 
 void GnbRlsTask::onQuit()
 {
-    m_udpTask->quit();
     m_ctlTask->quit();
+    m_udpTask->quit();
     delete m_udpTask;
     delete m_ctlTask;
 }

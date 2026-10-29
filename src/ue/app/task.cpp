@@ -15,6 +15,8 @@
 #include <ue/tun/tun.hpp>
 #include <utils/common.hpp>
 #include <utils/constants.hpp>
+#include <utils/process.hpp>
+#include <unistd.h>
 
 #include <sstream>
 #include <vector>
@@ -24,55 +26,6 @@
 #include <ifaddrs.h>    // For getifaddrs, freeifaddrs
 #include <arpa/inet.h>  // For inet_ntoa (used for converting IP address to string)
 
-
-std::vector<int> findAllMaintainIndices() {
-    std::vector<int> maintainIndices;
-    for (size_t i = 0; i < NtsTask::apSelection.additionalInfo.size(); ++i) {
-        if (NtsTask::apSelection.additionalInfo[i] == "Maintain") {
-            maintainIndices.push_back(i);
-        }
-    }
-    return maintainIndices;
-}
-
-std::vector<unsigned char> ip_to_bytes(const std::string& ip_address) 
-{
-    std::vector<unsigned char> bytes;
-
-    // Create a string stream to tokenize the IP address string
-    std::istringstream iss(ip_address);
-    std::string octet;
-
-    // Tokenize the IP address string by '.' delimiter and convert each octet to its numeric value
-    while (std::getline(iss, octet, '.')) {
-        // Convert the octet string to an integer and store it as a byte
-        unsigned char byte = static_cast<unsigned char>(std::stoi(octet));
-        bytes.push_back(byte);
-    }
-  return bytes;
-}
-
-// Function to execute a command
-int execute_command(const std::string& command) {
-    return system(command.c_str());
-}
-
-// Function to build the command
-std::string build_command(const std::string& base_cmd,  const std::string& target_network, const std::string interface) {
-    return base_cmd +" via " + target_network + " dev "+ interface ;
-}
-
-// Function to add  route
-int route(const std::string& target_network, const std::string interface) {
-    std::string cmd = build_command("ip route add default", target_network, interface);
-    return execute_command(cmd);
-}
-// Function to delete route
-
-int delete_route(const std::string& target_network, const std::string interface){
-    std::string cmd = build_command("ip route del default ",target_network, interface);
-    return execute_command(cmd);
-}
 
 static constexpr const int SWITCH_OFF_TIMER_ID = 1;
 static constexpr const int SWITCH_OFF_DELAY = 500;
@@ -87,18 +40,12 @@ UeAppTask::UeAppTask(TaskBase *base) : m_base{base}
 
 void UeAppTask::onStart()
 {
-    std::string ip_address = m_base->config->staticIP;
-    try {
-	bytes = ip_to_bytes(ip_address);
-	// bytes will now contain {10, 0, 4, 14}
-    } catch (const std::invalid_argument& e) {
-	std::cerr << "Error: " << e.what() << std::endl;
-}
-
+    // Wi-Fi uses the configured Linux interface; 5G creates TUNs after session establishment.
 }
 
 void UeAppTask::onQuit()
 {
+    removeWifiRoute();
     for (auto &tunTask : m_tunTasks)
     {
         if (tunTask != nullptr)
@@ -113,79 +60,11 @@ void UeAppTask::onQuit()
 void UeAppTask::onLoop()
 {
     auto msg = take();
-    if (!msg){	
-	if (NtsTask::establishConnection == true)
-    	{
-	    PduSession wifiSession(1);
-        wifiSession.psState = EPsState::ACTIVE;
-        wifiSession.uplinkPending = true;
-        wifiSession.sessionType = nas::EPduSessionType::IPV4;
-        //std::vector<unsigned char> bytes = {0b00001010, 0b00000000, 0b00000001, 0b00001110};
-        OctetString address(std::move(bytes)); // Use std::move to cast bytes to an rvalue reference
-        nas::IEPduAddress pduAddress(wifiSession.sessionType, std::move(address)); // Wrap OctetString in IEPduA>
-        wifiSession.pduAddress = std::move(pduAddress); // Assign IEPduAddress to pduAddress member of session
-	    std::vector<int> maintainIndices = findAllMaintainIndices();
-        if (!maintainIndices.empty() )
-        {
-             for (int maintainIndex : maintainIndices) {
-             if (maintainIndex > 0) {
-             NtsTask::apSelection.additionalInfo[maintainIndex] = "Establish"; // Assign empty string to the element
-             int status = system("ip route del default");
-             if (status == 0) {
-                     m_logger->info("Deleted previous connection");
-                     }
-             }
-             }
-        }
-	if ( NtsTask::apSelection.additionalInfo[0] == "Establish")
-	{
-        int status = route(NtsTask::apSelection.ipv4address[0], m_base->config->interface);
-        if (status == 0)
-        {
-                m_logger->info("Building Connection.");
-        }
-        setupTunInterface(&wifiSession); // Pass the address of session to setupTunInterface
-	    NtsTask::connectionEstablished = true;
-	    NtsTask::apSelection.additionalInfo[0] =  std::move("Maintain");
-	}
-	else if (NtsTask::apSelection.additionalInfo[0] == "Maintain" && NtsTask::counter < 10)
-	{
-		return;
-	}
-	else if (NtsTask::counter > SWITCH_OFF_DELAY)
-	{
-	    int status = delete_route(NtsTask::apSelection.ipv4address[0], m_base->config->interface);
-            if (status == 0)
-            {
-                m_logger->info("Time out removing Connection.");
-            }
-	    if (m_tunTasks[wifiSession.psi] != nullptr)
-            {
-                m_tunTasks[wifiSession.psi]->quit();
-                delete m_tunTasks[wifiSession.psi];
-                m_tunTasks[wifiSession.psi] = nullptr;
-            }
-	    NtsTask::counter = 0;
-	    NtsTask::establishConnection = false;
-	    NtsTask::connectionEstablished = false;
-	}
-        else
-        {
-            int status = system("ip route del default");
-            if (status == 0)
-            {
-                m_logger->info("Removing Connection.");
-            }
-            if (m_tunTasks[wifiSession.psi] != nullptr)
-            {
-                m_tunTasks[wifiSession.psi]->quit();
-                delete m_tunTasks[wifiSession.psi];
-                m_tunTasks[wifiSession.psi] = nullptr;
-            }
-        }
-
-	}
-    return;
+    if (!msg)
+    {
+        if (m_base->config->wifi)
+            refreshWifiRoute();
+        return;
     }
     switch (msg->msgType)
     {
@@ -215,6 +94,9 @@ void UeAppTask::onLoop()
             setTimer(SWITCH_OFF_TIMER_ID, SWITCH_OFF_DELAY);
             break;
         }
+        case NmUeNasToApp::RADIO_LINK_FAILURE:
+            // Preserve session TUNs until NAS explicitly releases them or mobility recovers.
+            break;
         case NmUeNasToApp::DOWNLINK_DATA_DELIVERY: {
             auto *tunTask = m_tunTasks[w.psi];
             if (tunTask)
@@ -235,7 +117,7 @@ void UeAppTask::onLoop()
         switch (w.present)
         {
         case NmUeRrcToApp::SWITCH_REQUEST: {
-            updateRoutingForTunInterface();
+            updateRoutingForTunInterface(w.psi);
             auto x = std::make_unique<NmUeAppToNas>(NmUeAppToNas::SESSION_SWITCH_REQUEST);
             x->psi = w.psi;
             m_base->nasTask->push(std::move(x)); 
@@ -348,79 +230,89 @@ void UeAppTask::setupTunInterface(const PduSession *pduSession)
     if (!r || error.length() > 0)
     {
         m_logger->err("TUN configuration failure [%s]", error.c_str());
+        close(fd);
         return;
     }
 
     auto *task = new TunTask(m_base, psi, fd);
     m_tunTasks[psi] = task;
     task->start();
-    m_tunName = allocatedName;
+    m_tunNames[psi] = allocatedName;
+    m_tunAddresses[psi] = ipAddress;
 
     m_logger->info("Connection setup for PDU session[%d] is successful, TUN interface[%s, %s] is up.", pduSession->psi,
                    allocatedName.c_str(), ipAddress.c_str());
 }
 
-void UeAppTask::updateRoutingForTunInterface()
+void UeAppTask::updateRoutingForTunInterface(int psi)
 {
-    if (!utils::IsRoot())
-    {
-        m_logger->err("TUN interface could not be updated. Permission denied. Please run the UE with 'sudo'");
+    if (psi < 1 || psi > 15 || m_tunTasks[psi] == nullptr)
         return;
-    }
-
-    // Check if a TUN interface with the correct prefix exists and get its name and IP address
-    std::string interfaceName, ipAddress;
-    if (!UeAppTask::CheckInterfaceAndFetchIp(cons::TunNamePrefix, interfaceName, ipAddress))
-    {
-        m_logger->err("No TUN interface with prefix [%s] found.", cons::TunNamePrefix);
-        return;
-    }
-
-    m_logger->info("Found existing TUN interface: [%s] with IP address: [%s]", interfaceName.c_str(), ipAddress.c_str());
-
-    // Update the routing table for the existing TUN interface
     std::string error;
-    bool routingConfigured = tun::TunConfigure(interfaceName, ipAddress, cons::TunMtu, m_base->config->configureRouting, error);
-
-    if (!routingConfigured || !error.empty())
-    {
-        m_logger->err("Failed to update routing for TUN interface [%s]: %s", interfaceName.c_str(), error.c_str());
-        return;
-    }
-
-    m_logger->info("Routing update for TUN interface [%s] with IP [%s] was successful.", interfaceName.c_str(), ipAddress.c_str());
+    if (!tun::TunConfigure(m_tunNames[psi], m_tunAddresses[psi], cons::TunMtu,
+                           m_base->config->configureRouting, error))
+        m_logger->err("Failed to update routing for PDU session[%d]: %s", psi, error.c_str());
 }
 
-// Function to check for the interface with prefix and return its IP address.
-bool UeAppTask::CheckInterfaceAndFetchIp(const std::string &prefix, std::string &interfaceName, std::string &ipAddress) {
-    struct ifaddrs *addrs, *tmp;
-    getifaddrs(&addrs);
-    tmp = addrs;
-
-    while (tmp) {
-        std::string currentInterface = tmp->ifa_name;
-        
-        // Check if the interface starts with the provided prefix.
-        if (currentInterface.rfind(prefix, 0) == 0) {
-            // Interface exists
-            interfaceName = currentInterface;
-
-            // Check if the interface has an associated IP address.
-            if (tmp->ifa_addr && tmp->ifa_addr->sa_family == AF_INET) {
-                struct sockaddr_in *addr = (struct sockaddr_in *)tmp->ifa_addr;
-                ipAddress = inet_ntoa(addr->sin_addr);
-                
-                // Clean up and return success.
-                freeifaddrs(addrs);
-                return true;
+void UeAppTask::refreshWifiRoute()
+{
+    std::string gateway;
+    int bestDbm = -120;
+    const auto now = utils::CurrentTimeMillis();
+    {
+        std::lock_guard<std::mutex> lock(m_base->wifiState.mutex);
+        for (const auto &candidate : m_base->wifiState.candidates)
+        {
+            if (now - candidate.lastSeen <= 10000 && candidate.dbm > bestDbm)
+            {
+                gateway = candidate.address;
+                bestDbm = candidate.dbm;
             }
         }
-        tmp = tmp->ifa_next;
     }
+    if (gateway == m_wifiGateway)
+        return;
+    if (gateway.empty())
+    {
+        removeWifiRoute();
+        return;
+    }
+    const auto &config = *m_base->config;
+    const auto table = std::to_string(config.wifiRoutingTable);
+    const auto source = config.staticIP + "/32";
+    if (utils::RunCommand({"ip", "route", "replace", "table", table, "default", "via", gateway,
+                           "dev", config.interface, "onlink", "proto", "186"}) != 0)
+    {
+        m_logger->err("Failed to set Wi-Fi route in table[%s]", table.c_str());
+        return;
+    }
+    if (!m_wifiRuleInstalled)
+    {
+        if (utils::RunCommand({"ip", "rule", "add", "priority", table, "from", source, "table", table}) != 0)
+        {
+            utils::RunCommand({"ip", "route", "del", "table", table, "default", "via", gateway,
+                               "dev", config.interface, "proto", "186"});
+            m_logger->err("Failed to add Wi-Fi policy rule for source[%s]", source.c_str());
+            return;
+        }
+        m_wifiRuleInstalled = true;
+    }
+    m_wifiGateway = gateway;
+    m_logger->info("Wi-Fi gateway[%s] selected, source[%s], routing table[%s]",
+                   gateway.c_str(), config.staticIP.c_str(), table.c_str());
+}
 
-    // Clean up and return false if no matching interface is found.
-    freeifaddrs(addrs);
-    return false;
+void UeAppTask::removeWifiRoute()
+{
+    if (!m_wifiRuleInstalled)
+        return;
+    const auto &config = *m_base->config;
+    const auto table = std::to_string(config.wifiRoutingTable);
+    utils::RunCommand({"ip", "rule", "del", "priority", table, "from", config.staticIP + "/32", "table", table});
+    utils::RunCommand({"ip", "route", "del", "table", table, "default", "via", m_wifiGateway,
+                       "dev", config.interface, "proto", "186"});
+    m_wifiRuleInstalled = false;
+    m_wifiGateway.clear();
 }
 
 } // namespace nr::ue

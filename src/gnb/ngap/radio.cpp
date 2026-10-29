@@ -22,6 +22,13 @@ namespace nr::gnb
 
 void NgapTask::handleRadioLinkFailure(int ueId)
 {
+    if (!m_ueCtx.count(ueId))
+        return;
+    for (auto it = m_pendingPathSwitches.begin(); it != m_pendingPathSwitches.end();)
+        if (it->second.resource->ueId == ueId)
+            it = m_pendingPathSwitches.erase(it);
+        else
+            ++it;
     // Notify GTP task
     auto w = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::UE_CONTEXT_RELEASE);
     w->ueId = ueId;
@@ -59,16 +66,35 @@ void NgapTask::receivePaging(int amfId, ASN_NGAP_Paging *msg)
 //Urwah
 void NgapTask::handleSignalLost(int ueId, int psi)
 {
-    // Notify GTP task
-    auto *ue = findUeContext(ueId);
-    if (ue == nullptr)
+    if (!m_ueCtx.count(ueId))
         return;
-    auto w = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::UE_CONTEXT_RELEASE);
-    w->ueId = ueId;
-    m_base->gtpTask->push(std::move(w));
-    ue->pduSessions.erase(psi);
-
-
+    if (psi == 0)
+    {
+        handleRadioLinkFailure(ueId);
+        return;
+    }
+    auto *ue = findUeContext(ueId);
+    if (!ue || psi < 1 || psi > 15 || !ue->pduSessions.erase(psi))
+        return;
+    auto release = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::SESSION_RELEASE);
+    release->ueId = ueId;
+    release->psi = psi;
+    m_base->gtpTask->push(std::move(release));
+    m_logger->info("Released source handover session UE[%d] PSI[%d]", ueId, psi);
+    if (ue->pduSessions.empty())
+    {
+        // This is local handover cleanup, not a request to release the target's AMF context.
+        auto context = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::UE_CONTEXT_RELEASE);
+        context->ueId = ueId;
+        m_base->gtpTask->push(std::move(context));
+        if (m_base->rrcTask)
+        {
+            auto rrc = std::make_unique<NmGnbNgapToRrc>(NmGnbNgapToRrc::HANDOVER_RELEASE);
+            rrc->ueId = ueId;
+            m_base->rrcTask->push(std::move(rrc));
+        }
+        deleteUeContext(ueId);
+    }
 }
 
 } // namespace nr::gnb

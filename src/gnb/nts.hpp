@@ -69,7 +69,7 @@ struct NmGnbRlsToGtp : NtsMessage
     int ueId{};
     int psi{};
     OctetString pdu;
-    
+
     explicit NmGnbRlsToGtp(PR present) : NtsMessage(NtsMessageType::GNB_RLS_TO_GTP), present(present)
     {
     }
@@ -132,7 +132,7 @@ struct NmGnbNgapToRls : NtsMessage
     int ueId{};
     int psi{};
     //OctetString pdu{};
-    int amfId{};
+    int64_t amfId{};
     //Urwah
     std::unique_ptr<PduSessionResource> m_pduSession;
 
@@ -160,6 +160,7 @@ struct NmGnbRlsToRls : NtsMessage
         SESSION_CHANGE,
         DOWNLINK_XN_DATA,
         SESSION_TRANSMISSION,
+        SESSION_RELEASE,
     } present;
 
     // SIGNAL_DETECTED
@@ -178,7 +179,7 @@ struct NmGnbRlsToRls : NtsMessage
     int psi{};
     //Urwah
     std::unique_ptr<PduSessionResource> m_pduSession;
-    int amfId;
+    int64_t amfId{};
 
     // DOWNLINK_DATA
     // DOWNLINK_RRC
@@ -231,6 +232,7 @@ struct NmGnbRlsToNgap : NtsMessage
     enum PR
     {
         PACKET_SWITCH_REQUEST,
+        SESSION_RELEASE,
     } present;
 
     // RRC_PDU_DELIVERY
@@ -238,7 +240,7 @@ struct NmGnbRlsToNgap : NtsMessage
     //Urwah
     std::unique_ptr<PduSessionResource> m_pduSession;
     int psi{};
-    int amfId{};
+    int64_t amfId{};
 
     OctetString pdu{};
     nas::IEUeSecurityCapability m_ueSecurityCapability;
@@ -255,6 +257,7 @@ struct NmGnbNgapToRrc : NtsMessage
         RADIO_POWER_ON,
         NAS_DELIVERY,
         AN_RELEASE,
+        HANDOVER_RELEASE,
         PAGING,
     } present;
 

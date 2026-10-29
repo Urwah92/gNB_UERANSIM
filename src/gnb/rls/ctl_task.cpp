@@ -19,7 +19,6 @@ static constexpr const int TIMER_ID_ACK_SEND = 2;
 
 static constexpr const int TIMER_PERIOD_ACK_CONTROL = 1500;
 static constexpr const int TIMER_PERIOD_ACK_SEND = 2250;
-NtsTask::infoList NtsTask::ueIdPsi = {{},{}};
 
 namespace nr::gnb
 {
@@ -77,7 +76,7 @@ void RlsControlTask::onLoop()
             m->ueId = w.ueId;
             m->psi = w.psi;
             m_mainTask->push(std::move(m));
-            break;        
+            break;
             }
         case NmGnbRlsToRls::DOWNLINK_XN_DATA:
             {
@@ -134,7 +133,7 @@ void RlsControlTask::handleSignalLost(int ueId, int psi)
 
 void RlsControlTask::handleRlsMessage(int ueId, rls::RlsMessage &msg)
 {
-    
+
     if (msg.msgType == rls::EMessageType::PDU_TRANSMISSION_ACK)
     {
         auto &m = (rls::RlsPduTransmissionAck &)msg;
@@ -171,14 +170,17 @@ void RlsControlTask::handleRlsMessage(int ueId, rls::RlsMessage &msg)
     else if (msg.msgType == rls::EMessageType::RELEASE_SESSION)
     {
         auto &m = (rls::RlsTerminateSession &)msg;
-        auto w = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::SIGNAL_LOST);
-        w->ueId = m.pduId;
+        auto w = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::SESSION_RELEASE);
+        // Bind release to the RLS sender identity, never to an untrusted payload UE ID.
+        w->ueId = ueId;
         w->psi = m.psi;
         m_mainTask->push(std::move(w));
     }
     else if (msg.msgType == rls::EMessageType::SESSION_TRANSMISSION)
     {
         auto &m = (rls::RlsSessionTransmission &)msg;
+        if (!m.m_pduSession || m.m_pduSession->psi != static_cast<int>(m.payload))
+            return;
         auto w = std::make_unique<NmGnbRlsToRls>(NmGnbRlsToRls::SESSION_TRANSMISSION);
         w->ueId = ueId;
         w->psi = m.payload;
@@ -192,7 +194,7 @@ void RlsControlTask::handleRlsMessage(int ueId, rls::RlsMessage &msg)
         newResource->downTunnel = std::move(m.m_pduSession->downTunnel);
         newResource->qosFlows = std::move(m.m_pduSession->qosFlows);
         w->m_pduSession = std::move(newResource);
-        
+
         w->m_ueSecurityCapability = std::move(m.m_ueSecurityCapability);
         m_mainTask->push(std::move(w));
     }
@@ -248,7 +250,7 @@ void RlsControlTask::handleDownlinkRrcDelivery(int ueId, uint32_t pduId, rrc::Rr
     m_udpTask->send(ueId, msg);
 }
 //Urwah
-void RlsControlTask::handleDownlinkSessionDelivery(int ueId, int psi, int amfId, std::unique_ptr<PduSessionResource> m_pduSession)
+void RlsControlTask::handleDownlinkSessionDelivery(int ueId, int psi, int64_t amfId, std::unique_ptr<PduSessionResource> m_pduSession)
 {
     rls::RlsSessionTransmission msg{m_sti};
     msg.m_pduSession = std::move(m_pduSession);
@@ -305,7 +307,7 @@ void RlsControlTask::onAckSendTimerExpired()
 
     for (auto &item : copy)
     {
-        if (!item.second.empty())
+        if (item.second.empty())
             continue;
 
         rls::RlsPduTransmissionAck msg{m_sti};

@@ -71,6 +71,16 @@ bool UeCmdHandler::isAllPaused()
 
 void UeCmdHandler::handleCmd(NmUeCliCommand &msg)
 {
+    if (m_base->config->wifi)
+    {
+        if (msg.cmd->present == app::UeCliCommand::STATUS || msg.cmd->present == app::UeCliCommand::INFO)
+            sendResult(msg.address, Json::Obj({{"role", "wifi-ue"}, {"static-ip", m_base->config->staticIP},
+                {"interface", m_base->config->interface}, {"routing-table", m_base->config->wifiRoutingTable},
+                {"gateway", m_base->appTask->m_wifiGateway}}).dumpYaml());
+        else
+            sendError(msg.address, "Cellular commands are unavailable in Wi-Fi UE mode");
+        return;
+    }
     pauseTasks();
 
     uint64_t currentTime = utils::CurrentTimeMillis();

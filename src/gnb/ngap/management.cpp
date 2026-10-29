@@ -136,6 +136,11 @@ NgapUeContext *NgapTask::findUeByNgapIdPair(int amfCtxId, const NgapIdPair &idPa
 
 void NgapTask::deleteUeContext(int ueId)
 {
+    for (auto it = m_pendingPathSwitches.begin(); it != m_pendingPathSwitches.end();)
+        if (it->second.resource->ueId == ueId)
+            it = m_pendingPathSwitches.erase(it);
+        else
+            ++it;
     auto *ue = m_ueCtx[ueId];
     if (ue)
     {
@@ -146,6 +151,11 @@ void NgapTask::deleteUeContext(int ueId)
 
 void NgapTask::deleteAmfContext(int amfId)
 {
+    for (auto it = m_pendingPathSwitches.begin(); it != m_pendingPathSwitches.end();)
+        if (it->second.amfId == amfId)
+            it = m_pendingPathSwitches.erase(it);
+        else
+            ++it;
     auto *amf = m_amfCtx[amfId];
     if (amf)
     {

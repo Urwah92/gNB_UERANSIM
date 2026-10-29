@@ -123,6 +123,11 @@ class OctetView
         return index < size;
     }
 
+    inline size_t remaining() const
+    {
+        return index <= size ? size - index : 0;
+    }
+
     OctetString readOctetString(int length) const;
     OctetString readOctetString(size_t length) const;
     OctetString readOctetString() const;

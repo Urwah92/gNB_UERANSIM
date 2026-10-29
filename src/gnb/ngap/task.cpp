@@ -14,18 +14,21 @@
 #include <gnb/sctp/task.hpp>
 
 #include <gnb/rls/task.hpp>
-#include <gnb/gtp/task.hpp>  
+#include <gnb/gtp/task.hpp>
+#include <gnb/gtp/utils.hpp>
+#include <utils/common.hpp>
 
 namespace nr::gnb
 {
 
-NgapTask::NgapTask(TaskBase *base) : m_base{base}, m_ueNgapIdCounter{}, m_downlinkTeidCounter{}, m_isInitialized{}, m_pathSwitchPduSession{}
+NgapTask::NgapTask(TaskBase *base) : m_base{base}, m_ueNgapIdCounter{}, m_downlinkTeidCounter{}, m_isInitialized{}
 {
     m_logger = base->logBase->makeUniqueLogger("ngap");
 }
 
 void NgapTask::onStart()
 {
+    setTimer(9101, 1000);
 
     for (auto &amfConfig : m_base->config->amfConfigs)
         createAmfContext(amfConfig);
@@ -98,16 +101,18 @@ void NgapTask::onLoop()
     }
     //Urwah
     case NtsMessageType::GNB_GTP_TO_NGAP: {
-        auto &x = dynamic_cast<NmGnbGtpToNgap &>(*msg);    
+        auto &x = dynamic_cast<NmGnbGtpToNgap &>(*msg);
         switch (x.present)
-        { 
+        {
             case NmGnbGtpToNgap::DATA_PDU_INFO: {
                 auto *ue = findUeContext(x.ueId);
+                if (!ue || !x.m_pduSession || ue->amfUeNgapId < 0)
+                    break;
                 auto m = std::make_unique<NmGnbNgapToRls>(NmGnbNgapToRls::DATA_PDU_INFO);
                 m->m_pduSession = std::move(x.m_pduSession);
                 m->ueId = x.ueId;
                 m->psi = x.psi;
-                m->amfId = std::move(static_cast<int>(ue->amfUeNgapId));
+                m->amfId = ue->amfUeNgapId;
                 m_base->rlsTask->push(std::move(m));
                 break;
             }
@@ -118,18 +123,26 @@ void NgapTask::onLoop()
         auto &w = dynamic_cast<NmGnbRlsToNgap &>(*msg);
         switch (w.present)
         {
+            case NmGnbRlsToNgap::SESSION_RELEASE:
+                handleSignalLost(w.ueId, w.psi);
+                break;
             case NmGnbRlsToNgap::PACKET_SWITCH_REQUEST: {
-                std::string gtpIp = m_base->config->gtpAdvertiseIp.value_or(m_base->config->gtpIp);
-                w.m_pduSession->downTunnel.address = utils::IpToOctetString(gtpIp);
-                w.m_pduSession->downTunnel.teid = ++m_downlinkTeidCounter;
-                m_pathSwitchPduSession = w.m_pduSession.release();
-                handlePathSwitchRequest(w.ueId, w.amfId, *m_pathSwitchPduSession, w.m_ueSecurityCapability);
+                handlePathSwitchRequest(w.ueId, w.amfId, std::move(w.m_pduSession), w.m_ueSecurityCapability);
                 break;
             }
         }
         break;
     }
-    default: {        
+    case NtsMessageType::TIMER_EXPIRED: {
+        auto &timer = static_cast<NmTimerExpired &>(*msg);
+        if (timer.timerId == 9101)
+        {
+            expirePathSwitches();
+            setTimer(9101, 1000);
+        }
+        break;
+    }
+    default: {
         m_logger->unhandledNts(*msg);
         break;
     }
@@ -142,6 +155,7 @@ void NgapTask::onQuit()
         delete i.second;
     for (auto &i : m_amfCtx)
         delete i.second;
+    m_pendingPathSwitches.clear();
     m_ueCtx.clear();
     m_amfCtx.clear();
 }

@@ -34,7 +34,9 @@ void GnbRrcTask::onStart()
 
 void GnbRrcTask::onQuit()
 {
-    // todo
+    for (auto &entry : m_ueCtx)
+        delete entry.second;
+    m_ueCtx.clear();
 }
 
 void GnbRrcTask::onLoop()
@@ -64,6 +66,15 @@ void GnbRrcTask::onLoop()
         }
         case NmGnbNgapToRrc::AN_RELEASE: {
             releaseConnection(w.ueId);
+            break;
+        }
+        case NmGnbNgapToRrc::HANDOVER_RELEASE: {
+            auto context = m_ueCtx.find(w.ueId);
+            if (context != m_ueCtx.end())
+            {
+                delete context->second;
+                m_ueCtx.erase(context);
+            }
             break;
         }
         case NmGnbNgapToRrc::PAGING:

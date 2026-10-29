@@ -36,6 +36,7 @@ class GtpTask : public NtsTask
     PduSessionTree m_sessionTree;
 
     friend class GnbCmdHandler;
+    friend struct GnbHandoverTest;
 
   public:
     explicit GtpTask(TaskBase *base);

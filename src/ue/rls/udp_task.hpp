@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -34,20 +35,22 @@ class RlsUdpTask : public NtsTask
 
   private:
     std::unique_ptr<Logger> m_logger;
+    TaskBase *m_base;
     udp::UdpServer *m_server;
     NtsTask *m_ctlTask;
     RlsSharedContext* m_shCtx;
     std::vector<InetAddress> m_searchSpace;
+    // Lock order: cell state first, then TaskBase::wifiState when needed.
+    std::recursive_mutex m_stateMutex;
     std::unordered_map<uint64_t, CellInfo> m_cells;
     std::unordered_map<int, uint64_t> m_cellIdToSti;
     int64_t m_lastLoop;
     std::vector<Vector3> m_simPos;
     std::string m_mobPattern;
     int m_cellIdCounter;
-    int m_simPosIndex;
+    int64_t m_movementStart{};
     float m_velocity;
     friend class UeCmdHandler;
-    int velocity_in_time;
     bool m_wifi;
 
   public:
@@ -65,8 +68,7 @@ class RlsUdpTask : public NtsTask
     void receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::RlsMessage> &&msg);
     void onSignalChangeOrLost(int cellId);
     void heartbeatCycle(uint64_t time, const Vector3 &simPos);
-    void speedTimeCalculation(std::vector<Vector3>& simPos, float velocity);
-    int findCellWithHighestDbm(const std::unordered_map<uint64_t, CellInfo>& m_cells);
+    int findCellWithHighestDbm(int sourceCell, int64_t now);
 
   public:
     void initialize(NtsTask *ctlTask);

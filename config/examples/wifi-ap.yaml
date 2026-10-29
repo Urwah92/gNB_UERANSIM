@@ -1,0 +1,19 @@
+# Simulated Wi-Fi gateway; run in a separate lab node or network namespace.
+# Assign 10.200.0.1/24 to eth0 and provide a routed uplink on eth1.
+# Enable IPv4 forwarding and configure any upstream routes/NAT outside this program.
+# This uses the nr-gnb binary in wifi mode; it does not create an 802.11 radio AP.
+mcc: '208'
+mnc: '93'
+nci: '0x000000030'
+idLength: 32
+tac: 1
+linkIp: 10.200.0.1
+ngapIp: 10.200.0.1
+gtpIp: 10.200.0.1
+amfConfigs: []
+slices: []
+ignoreStreamIds: true
+wifi: true
+UeInterface: eth0
+nextHopInterface: eth1
+phyLocation: {x: 0, y: 0, z: 0}

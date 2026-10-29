@@ -324,7 +324,7 @@ struct GnbConfig
     /* Edited by Urwah */
     Vector3 phyLocation{};
     std::string ueInterface{};
-    bool wifi;
+    bool wifi{};
     std::string interface{};
 
     [[nodiscard]] inline uint32_t getGnbId() const

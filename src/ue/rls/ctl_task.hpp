@@ -23,6 +23,7 @@ namespace nr::ue
 
 class RlsControlTask : public NtsTask
 {
+    friend struct UeHandoverTest;
   private:
     std::unique_ptr<Logger> m_logger;
     RlsSharedContext *m_shCtx;
@@ -32,8 +33,14 @@ class RlsControlTask : public NtsTask
     std::unordered_map<uint32_t, rls::PduInfo> m_pduMap;
     std::unordered_map<int, std::vector<uint32_t>> m_pendingAck;
     std::unique_ptr<nr::ue::PduSessionResource> m_switchSession;
-    int oldCell;
-    int oldUeId;
+    struct PendingHandover
+    {
+        int sourceCell{};
+        uint32_t sourceUeId{};
+        int targetCell{};
+        int64_t sentAt{};
+    };
+    std::unordered_map<int, PendingHandover> m_pendingHandovers;
 
   public:
     explicit RlsControlTask(TaskBase *base, RlsSharedContext *shCtx);
@@ -48,7 +55,7 @@ class RlsControlTask : public NtsTask
     void initialize(NtsTask *mainTask, RlsUdpTask *udpTask);
 
   private:
-    void handleRlsMessage(int cellId, rls::RlsMessage &msg);
+    void handleRlsMessage(int cellId, int sourceCell, rls::RlsMessage &msg);
     void handleSignalChange(int cellId, int dbm);
     void handleUplinkRrcDelivery(int cellId, uint32_t pduId, rrc::RrcChannel channel, OctetString &&data);
     void handleUplinkDataDelivery(int psi, OctetString &&data);

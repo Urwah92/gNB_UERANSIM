@@ -8,13 +8,13 @@
 # and subject to the terms and conditions defined in LICENSE file.
 #
 
-if [ -z "$1" ]
-  then
-    echo "No IP address supplied"
-    exit
+if [ "$#" -lt 2 ]; then
+    echo "Usage: $0 <UE-IP-address> <command> [arguments...]" >&2
+    exit 2
 fi
 
 addr=$1
 shift
 
-LD_PRELOAD=./libdevbnd.so UE_BIND_ADDR=$addr $@
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec env LD_PRELOAD="$script_dir/libdevbnd.so${LD_PRELOAD:+:$LD_PRELOAD}" UE_BIND_ADDR="$addr" "$@"

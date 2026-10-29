@@ -7,6 +7,7 @@
 //
 
 #include "task.hpp"
+#include "encode.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
@@ -31,8 +32,16 @@
 #include <asn/ngap/ASN_NGAP_ServedGUAMIItem.h>
 #include <asn/ngap/ASN_NGAP_SliceSupportItem.h>
 #include <asn/ngap/ASN_NGAP_SupportedTAItem.h>
-#include <gnb/gtp/task.hpp>  
+#include <gnb/gtp/task.hpp>
 #include <gnb/rls/task.hpp>
+#include <asn/ngap/ASN_NGAP_PathSwitchRequestAcknowledge.h>
+#include <asn/ngap/ASN_NGAP_PathSwitchRequestFailure.h>
+#include <asn/ngap/ASN_NGAP_PathSwitchRequestAcknowledgeTransfer.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceSwitchedItem.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceReleasedItemPSAck.h>
+#include <asn/ngap/ASN_NGAP_PDUSessionResourceReleasedItemPSFail.h>
+#include <asn/ngap/ASN_NGAP_UPTransportLayerInformation.h>
+#include <asn/ngap/ASN_NGAP_GTPTunnel.h>
 
 namespace nr::gnb
 {
@@ -206,23 +215,126 @@ void NgapTask::receiveNgSetupResponse(int amfId, ASN_NGAP_NGSetupResponse *msg)
     }
 }
 
-//Urwah
 void NgapTask::receivePSRAck(int amfId, ASN_NGAP_PathSwitchRequestAcknowledge *msg)
 {
-    auto *ue = findUeContext(m_pathSwitchPduSession->ueId);
-    auto w = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::UE_CONTEXT_UPDATE);
-    w->update = std::make_unique<GtpUeContextUpdate>(true, ue->ctxId, ue->ueAmbr);
-    m_base->gtpTask->push(std::move(w));
+    const auto ids = ngap_utils::FindNgapIdPair(msg);
+    if (!ids.amfUeNgapId.has_value() || !ids.ranUeNgapId.has_value())
+    {
+        m_logger->warn("Ignoring Path Switch Request Acknowledge without both UE identifiers");
+        return;
+    }
+    auto *ue = findUeByNgapIdPair(amfId, ids);
+    if (!ue || ue->associatedAmfId != amfId)
+        return;
 
-    auto m = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::SESSION_CREATE);
-    m->resource = m_pathSwitchPduSession;
-    m_base->gtpTask->push(std::move(m));
+    auto *switched = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceSwitchedList);
+    if (switched)
+    {
+        const auto &list = switched->PDUSessionResourceSwitchedList.list;
+        for (int i = 0; i < list.count; ++i)
+        {
+            const auto *item = list.array[i];
+            if (!item)
+                continue;
+            const uint64_t key = (static_cast<uint64_t>(ue->ctxId) << 32) | static_cast<uint32_t>(item->pDUSessionID);
+            auto pending = m_pendingPathSwitches.find(key);
+            if (pending == m_pendingPathSwitches.end() || pending->second.amfId != amfId)
+            {
+                m_logger->warn("Ignoring unexpected path switch ACK UE[%d] PSI[%d]", ue->ctxId, item->pDUSessionID);
+                continue;
+            }
+            auto transfer = asn::WrapUnique(
+                ngap_encode::Decode<ASN_NGAP_PathSwitchRequestAcknowledgeTransfer>(
+                    asn_DEF_ASN_NGAP_PathSwitchRequestAcknowledgeTransfer, item->pathSwitchRequestAcknowledgeTransfer),
+                asn_DEF_ASN_NGAP_PathSwitchRequestAcknowledgeTransfer);
+            if (!transfer)
+            {
+                m_logger->err("Invalid Path Switch Request Acknowledge transfer for UE[%d]", ue->ctxId);
+                m_pendingPathSwitches.erase(pending);
+                continue;
+            }
+            auto &session = pending->second.resource;
+            if (transfer->uL_NGU_UP_TNLInformation)
+            {
+                const auto &information = *transfer->uL_NGU_UP_TNLInformation;
+                const auto *tunnel = information.choice.gTPTunnel;
+                if (information.present != ASN_NGAP_UPTransportLayerInformation_PR_gTPTunnel || !tunnel ||
+                    tunnel->gTP_TEID.size != 4 ||
+                    (tunnel->transportLayerAddress.size != 4 && tunnel->transportLayerAddress.size != 16) ||
+                    tunnel->transportLayerAddress.bits_unused != 0)
+                {
+                    m_logger->err("Invalid uplink GTP tunnel in path switch ACK for UE[%d]", ue->ctxId);
+                    m_pendingPathSwitches.erase(pending);
+                    continue;
+                }
+                session->upTunnel.teid = static_cast<uint32_t>(asn::GetOctet4(tunnel->gTP_TEID));
+                session->upTunnel.address = asn::GetOctetString(tunnel->transportLayerAddress);
+            }
+            const int psi = session->psi;
+            auto update = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::UE_CONTEXT_UPDATE);
+            update->update = std::make_unique<GtpUeContextUpdate>(true, ue->ctxId, ue->ueAmbr);
+            m_base->gtpTask->push(std::move(update));
+            auto create = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::SESSION_CREATE);
+            create->resource = session.release();
+            m_base->gtpTask->push(std::move(create));
+            m_pendingPathSwitches.erase(pending);
+            ue->pduSessions.insert(psi);
 
-    auto y = std::make_unique<NmGnbNgapToRls>(NmGnbNgapToRls::XN_SESSION_CREATE);
-    y->ueId = m_pathSwitchPduSession->ueId;
-    y->psi = m_pathSwitchPduSession->psi;
-    m_base->rlsTask->push(std::move(y));
+            auto confirmed = std::make_unique<NmGnbNgapToRls>(NmGnbNgapToRls::XN_SESSION_CREATE);
+            confirmed->ueId = ue->ctxId;
+            confirmed->psi = psi;
+            if (m_base->rlsTask)
+                m_base->rlsTask->push(std::move(confirmed));
+            m_logger->info("Path switch complete for UE[%d] PSI[%d]", ue->ctxId, psi);
+        }
+    }
+    auto *released = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceReleasedListPSAck);
+    if (released)
+    {
+        const auto &list = released->PDUSessionResourceReleasedListPSAck.list;
+        for (int i = 0; i < list.count; ++i)
+        {
+            if (!list.array[i])
+                continue;
+            const int psi = static_cast<int>(list.array[i]->pDUSessionID);
+            const uint64_t key = (static_cast<uint64_t>(ue->ctxId) << 32) | static_cast<uint32_t>(psi);
+            m_pendingPathSwitches.erase(key);
+            m_logger->warn("AMF rejected path switch for UE[%d] PSI[%d]; source session retained", ue->ctxId, psi);
+        }
+    }
+}
 
+void NgapTask::receivePathSwitchFailure(int amfId, ASN_NGAP_PathSwitchRequestFailure *msg)
+{
+    const auto ids = ngap_utils::FindNgapIdPair(msg);
+    if (!ids.amfUeNgapId.has_value() || !ids.ranUeNgapId.has_value())
+    {
+        m_logger->warn("Ignoring Path Switch Request Failure without both UE identifiers");
+        return;
+    }
+    auto *ue = findUeByNgapIdPair(amfId, ids);
+    if (!ue || ue->associatedAmfId != amfId)
+        return;
+    auto *released = asn::ngap::GetProtocolIe(msg, ASN_NGAP_ProtocolIE_ID_id_PDUSessionResourceReleasedListPSFail);
+    if (!released)
+    {
+        m_logger->warn("Ignoring path switch failure without session identifiers");
+        return;
+    }
+    const auto &list = released->PDUSessionResourceReleasedListPSFail.list;
+    for (int i = 0; i < list.count; ++i)
+    {
+        if (!list.array[i])
+            continue;
+        const int psi = static_cast<int>(list.array[i]->pDUSessionID);
+        const uint64_t key = (static_cast<uint64_t>(ue->ctxId) << 32) | static_cast<uint32_t>(psi);
+        auto pending = m_pendingPathSwitches.find(key);
+        if (pending != m_pendingPathSwitches.end() && pending->second.amfId == amfId)
+        {
+            m_pendingPathSwitches.erase(pending);
+            m_logger->warn("Path switch failed for UE[%d] PSI[%d]; source session retained", ue->ctxId, psi);
+        }
+    }
 }
 
 void NgapTask::receiveNgSetupFailure(int amfId, ASN_NGAP_NGSetupFailure *msg)

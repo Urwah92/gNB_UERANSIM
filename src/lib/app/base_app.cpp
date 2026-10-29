@@ -19,16 +19,13 @@
 static std::atomic_int g_instanceCount{};
 static std::vector<void (*)()> g_runAtExit{};
 static std::vector<std::string> g_deleteAtExit{};
+static volatile std::sig_atomic_t g_shutdownRequested{};
+static std::atomic_bool g_taskShutdownRequested{};
 
 extern "C" void BaseSignalHandler(int num)
 {
-    for (auto &fun : g_runAtExit)
-        fun();
-    for (auto &file : g_deleteAtExit)
-        std::remove(file.c_str());
-
     if (num == SIGTERM || num == SIGINT)
-        exit(0);
+        g_shutdownRequested = 1;
 }
 
 namespace app
@@ -48,6 +45,26 @@ void Initialize()
 void RunAtExit(void (*fun)())
 {
     g_runAtExit.push_back(fun);
+}
+
+void RequestShutdown()
+{
+    g_taskShutdownRequested.store(true);
+}
+
+bool ShutdownRequested()
+{
+    return g_shutdownRequested != 0 || g_taskShutdownRequested.load();
+}
+
+void Finalize()
+{
+    for (auto fun : g_runAtExit)
+        fun();
+    for (const auto &file : g_deleteAtExit)
+        std::remove(file.c_str());
+    g_runAtExit.clear();
+    g_deleteAtExit.clear();
 }
 
 void DeleteAtExit(const std::string &file)

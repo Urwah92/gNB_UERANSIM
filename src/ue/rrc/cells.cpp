@@ -10,96 +10,37 @@
 
 #include <lib/rrc/encode.hpp>
 #include <ue/nas/task.hpp>
+#include <utils/process.hpp>
 
 namespace nr::ue
 {
 
 void UeRrcTask::handleCellSignalChange(int cellId, int dbm)
 {
-    bool considerLost = dbm < -120;
+    const bool considerLost = dbm < -120;
     if (!m_cellDesc.count(cellId))
     {
         if (!considerLost)
             notifyCellDetected(cellId, dbm);
+        return;
     }
-    else
+    if (considerLost)
     {
-        if (considerLost)
-            {notifyCellLost(cellId);}
-        else
-        {
-            m_cellDesc[cellId].dbm = dbm;
-            ActiveCellInfo lastActiveCell = m_base->shCtx.currentCell.get();
-            if(cellId == lastActiveCell.cellId)
-            {
-                /*Reference paper for UE latency: "5G standalone network's reliability one-way latency and packet loss rate analysis for URLLC implementation"*/
-                if (dbm > -75)
-                { 
-                    int flag = system("tc qdisc change dev eth1 root netem delay 9.76ms 3ms distribution normal");
-                    if (flag == 0)
-                    {
-                        m_logger->info("Change in UE Signal Strength Dbm: Good Signal Strength.");
-                    }
-                    else
-                    {
-                        int flag= system("tc qdisc add dev eth1 root netem delay 9.76ms 3ms distribution normal");
-                        if (flag==0)
-                        {
-                            m_logger->info("Change in UE Signal Strength Dbm: Good Signal Strength.");
-                        }
-                    }
-                }
-                else if (dbm > -113 && dbm <= -75)
-                { 
-                    int flag = system("tc qdisc change dev eth1 root netem delay 12ms 3ms distribution normal loss 0.0486%");
-                    if (flag == 0)
-                    {
-                        m_logger->info("Change in UE Signal Strength Dbm: Moderate Signal Strength.");
-                    }
-                    else
-                    {
-                        int flag= system("tc qdisc add dev eth1 root netem delay 12ms 3ms distribution normal loss 0.0486%");
-                        if (flag==0)
-                        {
-                            m_logger->info("Change in UE Signal Strength Dbm: Moderate Signal Strength.");
-                        }
-                    }
-                }
-                else if (dbm > -120 && dbm <= -113)
-                { 
-                    int flag = system("tc qdisc change dev eth1 root netem delay 13.53ms 3ms distribution normal");
-                    if (flag == 0)
-                    {
-                        m_logger->info("Change in UE Signal Strength Dbm: Weak Signal Strength.");
-                    }
-                    else
-                    {
-                        int flag= system("tc qdisc add dev eth1 root netem delay 13.53ms 3ms distribution normal");
-                        if (flag==0)
-                        {
-                            m_logger->info("Change in UE Signal Strength Dbm: Weak Signal Strength.");
-                        }
-                    }
-                }
-                else if (dbm == -120)
-                {
-                    int flag = system("tc qdisc change dev eth1 root netem delay 63ms 3ms distribution normal");
-                    if (flag == 0)
-                    {
-                        m_logger->info("Change in UE Signal Strength Dbm: Very Weak Signal Strength.");
-                    }
-                    else
-                    {
-                        int flag= system("tc qdisc add dev eth1 root netem delay 63ms 3ms distribution normal");
-                        if (flag==0)
-                        {
-                            m_logger->info("Change in UE Signal Strength Dbm: Very Weak Signal Strength.");
-                        }                    
-                    }
-                }
-            }
-        }
+        notifyCellLost(cellId);
+        return;
     }
+
+    m_cellDesc[cellId].dbm = dbm;
+    const auto &interface = m_base->config->trafficShapingInterface;
+    if (interface.empty() || !isActiveCell(cellId))
+        return;
+
+    // Optional simulation inherited from the handover fork. The parser validates interface syntax.
+    const char *delay = dbm > -75 ? "9.76ms" : dbm > -113 ? "12ms" : dbm > -120 ? "13.53ms" : "63ms";
+    const char *loss = dbm > -113 && dbm <= -75 ? "0.0486%" : "0%";
+    if (utils::RunCommand({"tc", "qdisc", "replace", "dev", interface, "root", "netem", "delay", delay,
+                           "3ms", "distribution", "normal", "loss", loss}) != 0)
+        m_logger->warn("Could not update simulated latency on interface [%s]", interface.c_str());
 }
 
 void UeRrcTask::notifyCellDetected(int cellId, int dbm)

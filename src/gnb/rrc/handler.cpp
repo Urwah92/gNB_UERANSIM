@@ -91,7 +91,12 @@ void GnbRrcTask::releaseConnection(int ueId)
     asn::Free(asn_DEF_ASN_RRC_DL_DCCH_Message, pdu);
 
     // Delete UE RRC context
-    m_ueCtx.erase(ueId);
+    auto context = m_ueCtx.find(ueId);
+    if (context != m_ueCtx.end())
+    {
+        delete context->second;
+        m_ueCtx.erase(context);
+    }
 }
 
 void GnbRrcTask::handleRadioLinkFailure(int ueId)
@@ -102,7 +107,12 @@ void GnbRrcTask::handleRadioLinkFailure(int ueId)
     m_base->ngapTask->push(std::move(w));
 
     // Delete UE RRC context
-    m_ueCtx.erase(ueId);
+    auto context = m_ueCtx.find(ueId);
+    if (context != m_ueCtx.end())
+    {
+        delete context->second;
+        m_ueCtx.erase(context);
+    }
 }
 
 void GnbRrcTask::handleSignalLost(int ueId, int psi)
@@ -114,7 +124,12 @@ void GnbRrcTask::handleSignalLost(int ueId, int psi)
     m_base->ngapTask->push(std::move(w));
 
     // Delete UE RRC context
-    m_ueCtx.erase(ueId);
+    auto context = m_ueCtx.find(ueId);
+    if (context != m_ueCtx.end())
+    {
+        delete context->second;
+        m_ueCtx.erase(context);
+    }
 }
 
 void GnbRrcTask::handlePaging(const asn::Unique<ASN_NGAP_FiveG_S_TMSI> &tmsi,

@@ -18,9 +18,11 @@
 #include <lib/app/cli_cmd.hpp>
 #include <lib/app/proc_table.hpp>
 #include <utils/constants.hpp>
+#include <utils/common.hpp>
 #include <utils/io.hpp>
 #include <utils/options.hpp>
 #include <utils/yaml_utils.hpp>
+#include <utils/process.hpp>
 #include <yaml-cpp/yaml.h>
 
 static app::CliServer *g_cliServer = nullptr;
@@ -32,6 +34,7 @@ static struct Options
 {
     std::string configFile{};
     bool disableCmd{};
+    bool checkConfig{};
 } g_options{};
 
 static nr::gnb::GnbConfig *ReadConfigYaml()
@@ -74,6 +77,9 @@ static nr::gnb::GnbConfig *ReadConfigYaml()
     {
         result->interface = yaml::GetString(config,"nextHopInterface");
     }
+    if (result->wifi && (!utils::IsInterfaceName(result->ueInterface) ||
+                         !utils::IsInterfaceName(result->interface) || result->ueInterface == result->interface))
+        throw std::runtime_error("Wi-Fi AP requires distinct valid UeInterface and nextHopInterface names");
 
     result->ignoreStreamIds = yaml::GetBool(config, "ignoreStreamIds");
     result->pagingDrx = EPagingDrx::V128;
@@ -115,15 +121,18 @@ static void ReadOptions(int argc, char **argv)
     opt::OptionItem itemConfigFile = {'c', "config", "Use specified configuration file for gNB", "config-file"};
     opt::OptionItem itemDisableCmd = {'l', "disable-cmd", "Disable command line functionality for this instance",
                                       std::nullopt};
+    opt::OptionItem itemCheckConfig = {'C', "check-config", "Validate configuration and exit", std::nullopt};
 
     desc.items.push_back(itemConfigFile);
     desc.items.push_back(itemDisableCmd);
+    desc.items.push_back(itemCheckConfig);
 
     opt::OptionsResult opt{argc, argv, desc, false, nullptr};
 
     if (opt.hasFlag(itemDisableCmd))
         g_options.disableCmd = true;
     g_options.configFile = opt.getOption(itemConfigFile);
+    g_options.checkConfig = opt.hasFlag(itemCheckConfig);
 
     try
     {
@@ -191,7 +200,7 @@ static void Loop()
 {
     if (!g_cliServer)
     {
-        ::pause();
+        utils::Sleep(100);
         return;
     }
 
@@ -222,8 +231,14 @@ static void Loop()
 
 int main(int argc, char **argv)
 {
-    app::Initialize();
     ReadOptions(argc, argv);
+    if (g_options.checkConfig)
+    {
+        std::cout << "Configuration valid" << std::endl;
+        delete g_refConfig;
+        return 0;
+    }
+    app::Initialize();
 
     std::cout << cons::Name << std::endl;
 
@@ -244,6 +259,16 @@ int main(int argc, char **argv)
 
     gnb->start();
 
-    while (true)
+    while (!app::ShutdownRequested())
         Loop();
+    delete gnb;
+    if (g_cliRespTask)
+    {
+        g_cliRespTask->quit();
+        delete g_cliRespTask;
+    }
+    delete g_cliServer;
+    delete g_refConfig;
+    app::Finalize();
+    return 0;
 }

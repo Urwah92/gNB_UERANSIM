@@ -29,10 +29,13 @@ GNodeB::GNodeB(GnbConfig *config, app::INodeListener *nodeListener, NtsTask *cli
     GNodeB::wifiAP = base->config->wifi;
 
     base->appTask = new GnbAppTask(base);
-    base->sctpTask = new SctpTask(base);
-    base->ngapTask = new NgapTask(base);
-    base->rrcTask = new GnbRrcTask(base);
-    base->gtpTask = new GtpTask(base);
+    if (!wifiAP)
+    {
+        base->sctpTask = new SctpTask(base);
+        base->ngapTask = new NgapTask(base);
+        base->rrcTask = new GnbRrcTask(base);
+        base->gtpTask = new GtpTask(base);
+    }
     base->rlsTask = new GnbRlsTask(base);
 
     taskBase = base;
@@ -41,10 +44,13 @@ GNodeB::GNodeB(GnbConfig *config, app::INodeListener *nodeListener, NtsTask *cli
 GNodeB::~GNodeB()
 {
     taskBase->appTask->quit();
-    taskBase->sctpTask->quit();
-    taskBase->ngapTask->quit();
-    taskBase->rrcTask->quit();
-    taskBase->gtpTask->quit();
+    if (!wifiAP)
+    {
+        taskBase->sctpTask->quit();
+        taskBase->ngapTask->quit();
+        taskBase->rrcTask->quit();
+        taskBase->gtpTask->quit();
+    }
     taskBase->rlsTask->quit();
 
     delete taskBase->appTask;

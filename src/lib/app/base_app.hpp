@@ -16,6 +16,9 @@ namespace app
 {
 
 void Initialize();
+void RequestShutdown();
+bool ShutdownRequested();
+void Finalize();
 
 void RunAtExit(void (*fun)());
 

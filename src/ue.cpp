@@ -6,12 +6,17 @@
 // See README, LICENSE, and CONTRIBUTING files for licensing details.
 //
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cctype>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
 
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 
 #include <lib/app/base_app.hpp>
 #include <lib/app/cli_base.hpp>
@@ -24,6 +29,7 @@
 #include <utils/constants.hpp>
 #include <utils/options.hpp>
 #include <utils/yaml_utils.hpp>
+#include <utils/process.hpp>
 #include <yaml-cpp/yaml.h>
 
 static app::CliServer *g_cliServer = nullptr;
@@ -36,6 +42,7 @@ static struct Options
     std::string configFile{};
     bool noRoutingConfigs{};
     bool disableCmd{};
+    bool checkConfig{};
     std::string imsi{};
     int count{};
     int tempo{};
@@ -83,10 +90,10 @@ class UeControllerTask : public NtsTask
                 if (key.empty())
                     return;
 
-                if (g_ueMap.removeAndGetSize(key) == 0)
-                    exit(0);
-
+                const bool lastUe = g_ueMap.removeAndGetSize(key) == 0;
                 delete w.ue;
+                if (lastUe)
+                    app::RequestShutdown();
                 break;
             }
             }
@@ -99,6 +106,14 @@ class UeControllerTask : public NtsTask
 };
 
 static UeControllerTask *g_controllerTask;
+
+static std::string ReadInterface(const YAML::Node &config, const std::string &key)
+{
+    auto name = yaml::GetString(config, key, 1, IFNAMSIZ - 1);
+    if (!utils::IsInterfaceName(name))
+        throw std::runtime_error("Invalid network interface name in field '" + key + "'");
+    return name;
+}
 
 static nr::ue::UeConfig *ReadConfigYaml()
 {
@@ -114,6 +129,8 @@ static nr::ue::UeConfig *ReadConfigYaml()
 
     for (auto &gnbSearchItem : yaml::GetSequence(config, "gnbSearchList"))
         result->gnbSearchList.push_back(gnbSearchItem.as<std::string>());
+    if (result->gnbSearchList.empty())
+        throw std::runtime_error("gnbSearchList must contain at least one gNB or simulated AP address");
 
     if (yaml::HasField(config, "default-nssai"))
     {
@@ -245,51 +262,47 @@ static nr::ue::UeConfig *ReadConfigYaml()
         result->uacAcc.cls14 = yaml::GetBool(config["uacAcc"], "class14");
         result->uacAcc.cls15 = yaml::GetBool(config["uacAcc"], "class15");
     }
-    if (yaml::HasField(config, "phyLocation")) 
-    {
-    const auto& phyLocation = config["phyLocation"];
-
-    const auto& xValues = phyLocation["x"];
-    const auto& yValues = phyLocation["y"];
-    const auto& zValues = phyLocation["z"];
-
-    // Assuming all arrays have the same size
-    size_t size = xValues.size();
-    for (size_t i = 0; i < size; ++i) 
-    {
-        int x = xValues[i].as<int>();
-        int y = yValues[i].as<int>();
-        int z = zValues[i].as<int>();
-
-        // Check if x, y, and z are valid integer values
-        if (xValues[i].IsScalar() && yValues[i].IsScalar() && zValues[i].IsScalar()) 
-        {
-            // Construct Vector3 object only if all values are integers
-            result->phyLocations.push_back(Vector3(x, y, z));
-        }
-    }
-    }
     if (yaml::HasField(config, "phyLocation"))
     {
-        result->mobPattern = yaml::GetString(config,"pattern");
+        const auto location = config["phyLocation"];
+        const auto x = location["x"];
+        const auto y = location["y"];
+        const auto z = location["z"];
+        if (!location.IsMap() || !x.IsSequence() || !y.IsSequence() || !z.IsSequence() || x.size() == 0 ||
+            x.size() != y.size() || x.size() != z.size())
+            throw std::runtime_error("phyLocation must contain nonempty x, y, z arrays of equal length");
+        for (size_t i = 0; i < x.size(); ++i)
+            result->phyLocations.emplace_back(x[i].as<int>(), y[i].as<int>(), z[i].as<int>());
     }
+    else
+        result->phyLocations.emplace_back(0, 0, 0);
 
+    if (yaml::HasField(config, "pattern"))
+        result->mobPattern = yaml::GetString(config, "pattern");
+    if (result->mobPattern != "linear" && result->mobPattern != "loop")
+        throw std::runtime_error("pattern must be 'linear' or 'loop'");
+
+    // velocity is metres/second; mobility is the key used by the earlier UE fork.
     if (yaml::HasField(config, "velocity"))
-    {
-        result->velocity=config["velocity"].as<float>();
-    }
+        result->velocity = config["velocity"].as<float>();
+    else if (yaml::HasField(config, "mobility"))
+        result->velocity = config["mobility"].as<float>();
+    if (!std::isfinite(result->velocity) || result->velocity < 0.0f)
+        throw std::runtime_error("velocity (or legacy mobility) must be a finite nonnegative speed in metres/second");
 
+    if (yaml::HasField(config, "trafficShapingInterface"))
+        result->trafficShapingInterface = ReadInterface(config, "trafficShapingInterface");
     if (yaml::HasField(config, "wifi"))
+        result->wifi = yaml::GetBool(config, "wifi");
+    if (yaml::HasField(config, "wifiRoutingTable"))
+        result->wifiRoutingTable = yaml::GetInt32(config, "wifiRoutingTable", 10000, 60000);
+    if (result->wifi)
     {
-	    result->wifi=config["wifi"].as<bool>();
-    }
-    if (yaml::HasField(config, "wifi"))
-    {
-        if (result->wifi)
-        {
-            result->staticIP = yaml::GetString(config,"staticIP");
-            result->interface = yaml::GetString(config,"Interface");
-        }
+        result->staticIP = yaml::GetString(config, "staticIP");
+        in_addr address{};
+        if (inet_pton(AF_INET, result->staticIP.c_str(), &address) != 1)
+            throw std::runtime_error("staticIP must be an IPv4 address in Wi-Fi mode");
+        result->interface = ReadInterface(config, "Interface");
     }
     return result;
 }
@@ -309,6 +322,8 @@ static void ReadOptions(int argc, char **argv)
                                       std::nullopt};
     opt::OptionItem itemDisableRouting = {'r', "no-routing-config",
                                           "Do not auto configure routing for UE TUN interface", std::nullopt};
+    opt::OptionItem itemCheckConfig = {'C', "check-config", "Validate configuration without starting a node",
+                                      std::nullopt};
 
     desc.items.push_back(itemConfigFile);
     desc.items.push_back(itemImsi);
@@ -316,11 +331,13 @@ static void ReadOptions(int argc, char **argv)
     desc.items.push_back(itemTempo);
     desc.items.push_back(itemDisableCmd);
     desc.items.push_back(itemDisableRouting);
+    desc.items.push_back(itemCheckConfig);
 
     opt::OptionsResult opt{argc, argv, desc, false, nullptr};
 
     g_options.configFile = opt.getOption(itemConfigFile);
     g_options.noRoutingConfigs = opt.hasFlag(itemDisableRouting);
+    g_options.checkConfig = opt.hasFlag(itemCheckConfig);
     if (opt.hasFlag(itemCount))
     {
         g_options.count = utils::ParseInt(opt.getOption(itemCount));
@@ -422,6 +439,8 @@ static nr::ue::UeConfig *GetConfigByUe(int ueIndex)
     c->wifi = g_refConfig->wifi;
     c->staticIP = g_refConfig->staticIP;
     c->interface = g_refConfig->interface;
+    c->trafficShapingInterface = g_refConfig->trafficShapingInterface;
+    c->wifiRoutingTable = g_refConfig->wifiRoutingTable;
     if (c->supi.has_value())
         IncrementNumber(c->supi->value, ueIndex);
     if (c->imei.has_value())
@@ -487,7 +506,7 @@ static void Loop()
 {
     if (!g_cliServer)
     {
-        ::pause();
+        utils::Sleep(100);
         return;
     }
 
@@ -529,14 +548,20 @@ static class UeController : public app::IUeController
 
 int main(int argc, char **argv)
 {
-    app::Initialize();
-
     try
     {
         ReadOptions(argc, argv);
         g_refConfig = ReadConfigYaml();
+        if (g_refConfig->wifi && g_options.count > 1)
+            throw std::runtime_error("Wi-Fi mode requires one UE per process with its own staticIP and wifiRoutingTable");
         if (g_options.imsi.length() > 0)
             g_refConfig->supi = Supi::Parse("imsi-" + g_options.imsi);
+        if (g_options.checkConfig)
+        {
+            std::cout << "Configuration valid" << std::endl;
+            delete g_refConfig;
+            return 0;
+        }
     }
     catch (const std::runtime_error &e)
     {
@@ -544,6 +569,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    app::Initialize();
     std::cout << cons::Name << std::endl;
 
     g_controllerTask = new UeControllerTask();
@@ -580,6 +606,18 @@ int main(int argc, char **argv)
         g_ueMap.invokeForeach([](const auto &ue) { ue.second->start(); });
     }
 
-    while (true)
+    while (!app::ShutdownRequested())
         Loop();
+    g_controllerTask->quit();
+    delete g_controllerTask;
+    g_ueMap.invokeForeach([](const auto &entry) { delete entry.second; });
+    if (g_cliRespTask)
+    {
+        g_cliRespTask->quit();
+        delete g_cliRespTask;
+    }
+    delete g_cliServer;
+    delete g_refConfig;
+    app::Finalize();
+    return 0;
 }

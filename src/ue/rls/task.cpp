@@ -13,6 +13,7 @@
 #include <ue/rrc/task.hpp>
 #include <utils/common.hpp>
 #include <utils/random.hpp>
+#include <utils/process.hpp>
 
 namespace nr::ue
 {
@@ -75,8 +76,12 @@ void UeRlsTask::onLoop()
             auto m = std::make_unique<NmUeRlsToRrc>(NmUeRlsToRrc::RADIO_LINK_FAILURE);
             m->rlfCause = w.rlfCause;
             m_base->rrcTask->push(std::move(m));
-	        int flag=system("tc qdisc change dev eth1 root netem delay 0ms loss 0%");
-            if(flag){}
+            if (!m_base->config->trafficShapingInterface.empty())
+            {
+                if (utils::RunCommand({"tc", "qdisc", "replace", "dev", m_base->config->trafficShapingInterface,
+                                       "root", "netem", "delay", "0ms", "loss", "0%"}) != 0)
+                    m_logger->warn("Could not reset simulated latency");
+            }
 	        break;
         }
         case NmUeRlsToRls::TRANSMISSION_FAILURE: {
@@ -136,7 +141,8 @@ void UeRlsTask::onLoop()
             break;
         }
         case NmUeNasToRls::CHANGE_SESSION:{
-            m_ueSecurityCapability = std::move(w.ueSecurityCapability);
+            std::lock_guard<std::mutex> lock(m_shCtx->securityMutex);
+            m_shCtx->ueSecurityCapability = w.ueSecurityCapability;
             break;
         }
         }
@@ -150,8 +156,8 @@ void UeRlsTask::onLoop()
 
 void UeRlsTask::onQuit()
 {
-    m_udpTask->quit();
     m_ctlTask->quit();
+    m_udpTask->quit();
 
     delete m_udpTask;
     delete m_ctlTask;

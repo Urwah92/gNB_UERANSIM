@@ -1,0 +1,18 @@
+# Local 5G handover example. Configure the core to serve PLMN 208/93 and slice 1/010203.
+mcc: '208'
+mnc: '93'
+nci: '0x000000010'
+idLength: 32
+tac: 1
+linkIp: 127.0.0.2
+ngapIp: 127.0.0.2
+gtpIp: 127.0.0.2
+amfConfigs:
+  - address: 127.0.0.5
+    port: 38412
+slices:
+  - sst: 1
+    sd: 0x010203
+ignoreStreamIds: true
+wifi: false
+phyLocation: {x: 0, y: 0, z: 0}

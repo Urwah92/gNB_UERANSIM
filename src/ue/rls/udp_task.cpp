@@ -7,6 +7,7 @@
 //
 
 #include "udp_task.hpp"
+#include "mobility.hpp"
 #include <cstdint>
 #include <cstring>
 #include <set>
@@ -25,14 +26,6 @@ static constexpr const int BUFFER_SIZE = 16384;
 static constexpr const int LOOP_PERIOD = 1000;
 static constexpr const int RECEIVE_TIMEOUT = 200;
 static constexpr const int HEARTBEAT_THRESHOLD = 10000; // (LOOP_PERIOD + RECEIVE_TIMEOUT)'dan büyük olmalı
-
-bool NtsTask::connectionEstablished = false;
-bool NtsTask::establishConnection = false;
-std::string NtsTask::state = "";
-int NtsTask::counter = 0;
-// Static member of wifiAp struct
-NtsTask::wifiAp NtsTask::apSelection= {{},{},{}};
-
 
 std::string getIPv4AddressString(const InetAddress &inetAddress) {
   if (inetAddress.getIpVersion() != 4) {
@@ -57,123 +50,36 @@ std::string getIPv4AddressString(const InetAddress &inetAddress) {
   return std::string(ipString);
 }
 
-// Function to add or update IP address, dBm, and additional info in a wifiAp struct
-void addOrUpdateIPAddress(const std::string& ipv4Address, int newDbm, const std::string& additionalInfo) {
-    // Check if the IPv4 address already exists in the vector
-    auto it = std::find(NtsTask::apSelection.ipv4address.begin(), NtsTask::apSelection.ipv4address.end(), ipv4Address);
-
-    if (it != NtsTask::apSelection.ipv4address.end()) {
-        // If address exists, find its index
-        size_t index = std::distance(NtsTask::apSelection.ipv4address.begin(), it);
-        // Update dBm and additional info at the found index
-        NtsTask::apSelection.dbmWifi[index] = newDbm;
-        NtsTask::apSelection.additionalInfo[index] = additionalInfo;
-    } else {
-        // If address doesn't exist, add it to the vectors
-        NtsTask::apSelection.ipv4address.push_back(ipv4Address);
-        NtsTask::apSelection.dbmWifi.push_back(newDbm);
-        NtsTask::apSelection.additionalInfo.push_back(additionalInfo);
-    }
-}
-
- // Function to sort IP addresses based on dBm values and additional info
-void sortByDBM() {
-        std::vector<size_t> indices(NtsTask::apSelection.ipv4address.size());
-        std::iota(indices.begin(), indices.end(), 0); // Initialize indices to 0, 1, 2, ..., n-1
-
-        // Custom sorting function based on dBm values and additional info
-        std::sort(indices.begin(), indices.end(),
-                  [](size_t a, size_t b) {
-                      // First, compare dBm values
-                      if (NtsTask::apSelection.dbmWifi[a] != NtsTask::apSelection.dbmWifi[b]) {
-                          return NtsTask::apSelection.dbmWifi[a] > NtsTask::apSelection.dbmWifi[b];
-                      }
-                      // If dBm values are the same, compare additional info
-                      // If additional info is "Establish", it should come first
-                      if (NtsTask::apSelection.additionalInfo[a] == "Maintain" && NtsTask::apSelection.additionalInfo[b] != "Maintain") {
-                          return true;
-                      }
-                      return false; // If additional info is not "Establish" or both are "Establish", maintain order
-                  });
-
-        // Rearrange IP addresses, dBm values, and additional info based on sorted indices
-        std::vector<std::string> sortedIPv4;
-        std::vector<int> sortedDBM;
-        std::vector<std::string> sortedAdditionalInfo;
-
-        for (size_t i = 0; i < indices.size(); ++i) {
-            sortedIPv4.push_back(NtsTask::apSelection.ipv4address[indices[i]]);
-            sortedDBM.push_back(NtsTask::apSelection.dbmWifi[indices[i]]);
-            sortedAdditionalInfo.push_back(NtsTask::apSelection.additionalInfo[indices[i]]);
-        }
-
-        // Update apSelection with sorted data
-        NtsTask::apSelection.ipv4address = sortedIPv4;
-        NtsTask::apSelection.dbmWifi = sortedDBM;
-        NtsTask::apSelection.additionalInfo = sortedAdditionalInfo;
-    }
-
-int findMaintainIndex(const std::string& ipv4Address) {
-    auto it = std::find(NtsTask::apSelection.ipv4address.begin(), NtsTask::apSelection.ipv4address.end(), ipv4Address);
-    if (it != NtsTask::apSelection.ipv4address.end()) {
-        size_t index = std::distance(NtsTask::apSelection.ipv4address.begin(), it);
-        if (index < NtsTask::apSelection.additionalInfo.size() && NtsTask::apSelection.additionalInfo[index] == "Maintain") {
-            return index;
-        }
-    }
-    return -1; // "Maintain" not found for the given IPv4 address
-}
-
-
 namespace nr::ue
 {
 
 RlsUdpTask::RlsUdpTask(TaskBase *base, RlsSharedContext *shCtx, const std::vector<std::string> &searchSpace, std::vector<Vector3> simPos, const std::string mobPattern,const float velocity, const bool wifi)
-    : m_server{}, m_ctlTask{}, m_shCtx{shCtx}, m_searchSpace{}, m_cells{}, m_cellIdToSti{}, m_lastLoop{},m_simPos{simPos},
+    : m_base{base}, m_server{}, m_ctlTask{}, m_shCtx{shCtx}, m_searchSpace{}, m_cells{}, m_cellIdToSti{}, m_lastLoop{},m_simPos{simPos},
       m_mobPattern{mobPattern}, m_cellIdCounter{}, m_velocity{velocity}, m_wifi{wifi}
 {
     m_logger = base->logBase->makeUniqueLogger(base->config->getLoggerPrefix() + "rls-udp");
 
-    m_server = new udp::UdpServer();
+    m_server = wifi ? new udp::UdpServer(base->config->staticIP, 0) : new udp::UdpServer();
     for (auto &ip : searchSpace)
         m_searchSpace.emplace_back(ip, cons::RadioLinkPort);
 }
 
 void RlsUdpTask::onStart()
 {
-   m_simPosIndex = 0;
-   speedTimeCalculation(m_simPos, m_velocity);
+    // Defensive fallback also covers callers that do not use the YAML parser.
+    if (m_simPos.empty())
+        m_simPos.emplace_back(0, 0, 0);
+    m_movementStart = utils::CurrentTimeMillis();
 }
 
 void RlsUdpTask::onLoop()
 {
     auto current = utils::CurrentTimeMillis();
-    if (current - m_lastLoop > LOOP_PERIOD)
+    if (current - m_lastLoop >= LOOP_PERIOD)
     {
-        if(m_mobPattern == "linear")
-        {
-            m_lastLoop = current;
-            // Pass the corresponding Vector3 to heartbeatCycle
-            int lastIndex = m_simPos.size() - 1;
-            if (m_simPosIndex == lastIndex)
-            {
-                heartbeatCycle(current, m_simPos[lastIndex]);
-                m_simPosIndex = lastIndex;
-            }
-            else
-            {
-                heartbeatCycle(current, m_simPos[m_simPosIndex]);
-                m_simPosIndex++;
-            }
-        }
-        else
-        {
-            m_lastLoop = current;
-            // Increment the index to move to the next position in m_simPos and start again 
-            m_simPosIndex = (m_simPosIndex + 1) % m_simPos.size();
-            heartbeatCycle(current, m_simPos[m_simPosIndex]);
-        }
-        //heartbeatCycle(current, m_simPos);
+        m_lastLoop = current;
+        const double elapsed = std::max<int64_t>(0, current - m_movementStart) / 1000.0;
+        heartbeatCycle(current, SampleMobilityPosition(m_simPos, m_velocity, elapsed, m_mobPattern == "loop"));
     }
     uint8_t buffer[BUFFER_SIZE];
     InetAddress peerAddress;
@@ -187,19 +93,20 @@ void RlsUdpTask::onLoop()
         else
             receiveRlsPdu(peerAddress, std::move(rlsMsg));
     }
-    else
-    {
-	NtsTask::counter++;
-    }
 }
 
 void RlsUdpTask::onQuit()
 {
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     delete m_server;
+    m_server = nullptr;
 }
 
 void RlsUdpTask::sendRlsPdu(const InetAddress &addr, const rls::RlsMessage &msg)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    if (!m_server)
+        return;
     OctetString stream;
     rls::EncodeRlsMessage(msg, stream);
 
@@ -208,6 +115,7 @@ void RlsUdpTask::sendRlsPdu(const InetAddress &addr, const rls::RlsMessage &msg)
 
 void RlsUdpTask::send(int cellId, const rls::RlsMessage &msg)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (m_cellIdToSti.count(cellId))
     {
         auto sti = m_cellIdToSti[cellId];
@@ -217,6 +125,7 @@ void RlsUdpTask::send(int cellId, const rls::RlsMessage &msg)
 
 void RlsUdpTask::receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::RlsMessage> &&msg)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (msg->msgType == rls::EMessageType::HEARTBEAT_ACK)
     {
         if (!m_cells.count(msg->sti))
@@ -236,34 +145,34 @@ void RlsUdpTask::receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::Rls
         m_cells[msg->sti].dbm = newDbm;
         if (m_wifi)
         {
-            std::string ipv4Address = getIPv4AddressString(addr);
-            if (newDbm > -120)
+            const auto address = getIPv4AddressString(addr);
+            if (address.empty())
+                return;
+            std::lock_guard<std::mutex> lock(m_base->wifiState.mutex);
+            auto &candidates = m_base->wifiState.candidates;
+            auto candidate = std::find_if(candidates.begin(), candidates.end(), [&address](const auto &value) {
+                return value.address == address;
+            });
+            if (candidate == candidates.end())
+                candidates.push_back({address, newDbm, utils::CurrentTimeMillis()});
+            else
             {
-            int index = findMaintainIndex(ipv4Address);
-            if(index != -1){
-                addOrUpdateIPAddress(ipv4Address, newDbm, "Maintain");}
-            else {
-                addOrUpdateIPAddress(ipv4Address, newDbm, "Establish");}
-            NtsTask::establishConnection = true;
-            sortByDBM();
+                candidate->dbm = newDbm;
+                candidate->lastSeen = utils::CurrentTimeMillis();
             }
-            else if (newDbm < -120)
-            {
-            addOrUpdateIPAddress(ipv4Address, newDbm, "");
-            sortByDBM();
-            }
+            return;
         }
-	    NtsTask::counter = 0;
         if (oldDbm != newDbm)
            {onSignalChangeOrLost(m_cells[msg->sti].cellId);}
 	    return;
     }
 
+    if (m_wifi)
+        return;
+
     if (!m_cells.count(msg->sti))
     {
         // if no HB-ACK received yet, and the message is not HB-ACK, then ignore the message
-        state = std::move("Release");
-        NtsTask::connectionEstablished = false;
         return;
     }
 
@@ -271,7 +180,12 @@ void RlsUdpTask::receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::Rls
     if (msg->msgType == rls::EMessageType::SESSION_TRANSMISSION)
     {
         w->old_cellId = m_cells[msg->sti].cellId;
-        w->cellId = findCellWithHighestDbm(m_cells);//cell id var is use to send packet to max dbm cell
+        w->cellId = findCellWithHighestDbm(w->old_cellId, utils::CurrentTimeMillis());
+        if (w->cellId < 0)
+        {
+            m_logger->warn("No fresh target cell in coverage for handover");
+            return;
+        }
     }
     else{
         w->cellId = m_cells[msg->sti].cellId;
@@ -283,6 +197,9 @@ void RlsUdpTask::receiveRlsPdu(const InetAddress &addr, std::unique_ptr<rls::Rls
 
 void RlsUdpTask::onSignalChangeOrLost(int cellId)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    if (m_wifi)
+        return;
     int dbm = INT32_MIN;
     if (m_cellIdToSti.count(cellId))
     {
@@ -299,12 +216,21 @@ void RlsUdpTask::onSignalChangeOrLost(int cellId)
 
 void RlsUdpTask::heartbeatCycle(uint64_t time, const Vector3 &simPos)
 {
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    if (m_wifi)
+    {
+        std::lock_guard<std::mutex> lock(m_base->wifiState.mutex);
+        auto &candidates = m_base->wifiState.candidates;
+        candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [time](const auto &candidate) {
+            return time - candidate.lastSeen > HEARTBEAT_THRESHOLD;
+        }), candidates.end());
+    }
+
     std::set<std::pair<uint64_t, int>> toRemove;
 
     for (auto &cell : m_cells)
     {
         auto delta = time - cell.second.lastSeen;
-	    //long unsigned int total_timeout = RECEIVE_TIMEOUT +  velocity_in_time;
         if (delta >  HEARTBEAT_THRESHOLD)
             toRemove.insert({cell.first, cell.second.cellId});
     }
@@ -331,57 +257,25 @@ void RlsUdpTask::initialize(NtsTask *ctlTask)
     m_ctlTask = ctlTask;
 }
 
-void RlsUdpTask::speedTimeCalculation(std::vector<Vector3>& simPos, float velocity)
-{
-    if (simPos.size() < 2 || velocity <= 0.0f) {
-        return; // No movement or invalid velocity
-    }
-
-    std::vector<Vector3> modifiedSimPos;
-
-    // Loop through each consecutive pair of points
-    for (size_t i = 1; i < simPos.size(); ++i) {
-        float deltaX = simPos[i].x - simPos[i - 1].x;
-        float deltaY = simPos[i].y - simPos[i - 1].y;
-        float deltaZ = simPos[i].z - simPos[i - 1].z;
-
-        // Calculate the distance between the two points
-        float squaredDistance = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
-        float distance = std::sqrt(squaredDistance);
-
-        // Calculate the time (in seconds) to travel between these two points
-        float time_in_sec = distance / velocity;
-
-        // Calculate how many times the UE should "stay" at the first point
-        int repetitions = static_cast<int>(std::round(time_in_sec));
-
-        // Repeat the current position for the calculated duration
-        for (int j = 0; j < repetitions; ++j) {
-            modifiedSimPos.push_back(simPos[i - 1]); // Repeat the starting point of the segment
-        }
-    }
-
-    // For the final point, append it without repetition
-    modifiedSimPos.push_back(simPos.back());
-
-    // Replace the original simPos with the modified one
-    simPos = std::move(modifiedSimPos);
-}
-
 // Function to find the cell with the highest dBm
-int RlsUdpTask::findCellWithHighestDbm(const std::unordered_map<uint64_t, CellInfo>& m_cells) {
-    int maxDbm = std::numeric_limits<int>::min();  // Initialize to the lowest possible dBm value
-    int cellWithMaxDbm = -1;  // Initialize cell ID
-
-    // Iterate over the map to find the cell with the highest dBm
-    for (const auto& [key, cellInfo] : m_cells) {
-        if (cellInfo.dbm > maxDbm) {
+int RlsUdpTask::findCellWithHighestDbm(int sourceCell, int64_t now)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    int maxDbm = -120;
+    int cellWithMaxDbm = -1;
+    for (const auto &[key, cellInfo] : m_cells)
+    {
+        if (cellInfo.cellId == sourceCell || cellInfo.dbm <= -120 || now < cellInfo.lastSeen ||
+            now - cellInfo.lastSeen > HEARTBEAT_THRESHOLD)
+            continue;
+        if (cellInfo.dbm > maxDbm || (cellInfo.dbm == maxDbm && cellInfo.cellId < cellWithMaxDbm))
+        {
             maxDbm = cellInfo.dbm;
             cellWithMaxDbm = cellInfo.cellId;
         }
     }
 
-    return cellWithMaxDbm;  // Return the cell ID with the highest dBm
+    return cellWithMaxDbm;
 }
 
 } // namespace nr::ue

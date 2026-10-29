@@ -35,6 +35,7 @@
 #include <asn/ngap/ASN_NGAP_UESecurityCapabilities.h>
 #include <asn/asn1c/OCTET_STRING.h>
 #include <gnb/gtp/task.hpp>
+#include <utils/common.hpp>
 
 
 #define MAX_LIST_SIZE 100 // Define an appropriate size based on your needs
@@ -222,58 +223,68 @@ void NgapTask::receiveRerouteNasRequest(int amfId, ASN_NGAP_RerouteNASRequest *m
 
     sendNgapUeAssociated(ue->ctxId, ngapPdu);
 }
-//Urwah
-void NgapTask::handlePathSwitchRequest(int ueId, int amfId, const PduSessionResource &pduSessionResource, 
-                                        const nas::IEUeSecurityCapability ueSecurityCapability)
+// This simulator relays handover context through the UE; this is not XnAP.
+void NgapTask::handlePathSwitchRequest(int ueId, int64_t sourceAmfUeId,
+                                     std::unique_ptr<PduSessionResource> resource,
+                                     const nas::IEUeSecurityCapability &ueSecurityCapability)
 {
-    m_logger->debug("Path Switch Request received from UE[%d]", ueId);
-    m_pathSwitchReqUeId = ueId;
-    // Ensure UE context exists
+    if (!resource || resource->ueId != ueId || resource->psi < 1 || resource->psi > 15 ||
+        sourceAmfUeId < 0 || sourceAmfUeId > 0xffffffffffLL)
+    {
+        m_logger->err("Invalid relayed handover context for UE[%d]", ueId);
+        return;
+    }
+    const uint64_t key = (static_cast<uint64_t>(ueId) << 32) | static_cast<uint32_t>(resource->psi);
+    if (m_pendingPathSwitches.count(key))
+    {
+        m_logger->warn("Path switch already pending for UE[%d] PSI[%d]", ueId, resource->psi);
+        return;
+    }
     if (!m_ueCtx.count(ueId))
-    {
         createUeContext(ueId);
-    }
-    auto *ueCtx = findUeContext(ueId);
-    if (ueCtx == nullptr)
+    auto *ue = findUeContext(ueId);
+    auto *amf = ue ? findAmfContext(ue->associatedAmfId) : nullptr;
+    if (!amf || amf->state != EAmfState::CONNECTED || amf->association.outStreams < 2)
     {
-        m_logger->err("Failed to find UE context for UE[%d]", ueId);
+        m_logger->err("No connected AMF with UE signalling streams for handover UE[%d]", ueId);
         return;
     }
-    if (ueCtx->amfUeNgapId == -1)
+    if (ue->amfUeNgapId != -1 && ue->amfUeNgapId != sourceAmfUeId)
     {
-        ueCtx->amfUeNgapId = amfId;
-    }
-    auto *amfCtx = findAmfContext(ueCtx->associatedAmfId);
-
-    if (amfCtx == nullptr || amfCtx->state != EAmfState::CONNECTED)
-    {
-        m_logger->err("AMF context not found or not connected for UE[%d]", ueId);
+        m_logger->err("Relayed AMF UE ID conflicts with target UE[%d] context", ueId);
         return;
     }
-
-    // Determine uplink stream
-    amfCtx->nextStream = (amfCtx->nextStream + 1) % amfCtx->association.outStreams;
-    if (amfCtx->nextStream == 0 && amfCtx->association.outStreams > 1)
-        amfCtx->nextStream += 1;
-    ueCtx->uplinkStream = amfCtx->nextStream;
-
-    auto w = std::make_unique<NmGnbNgapToGtp>(NmGnbNgapToGtp::UE_CONTEXT_UPDATE);
-    ueCtx->ueAmbr.dlAmbr = pduSessionResource.sessionAmbr.dlAmbr;
-    ueCtx->ueAmbr.ulAmbr = pduSessionResource.sessionAmbr.ulAmbr;
-    w->update = std::make_unique<GtpUeContextUpdate>(true, ueCtx->ctxId, ueCtx->ueAmbr);
-    m_base->gtpTask->push(std::move(w));
-
-    // Prepare NGAP PDU for Path Switch Request
-    auto *pdu = asn::New<ASN_NGAP_NGAP_PDU>();
-    pdu->present = ASN_NGAP_NGAP_PDU_PR_initiatingMessage;
-    pdu->choice.initiatingMessage = asn::New<ASN_NGAP_InitiatingMessage>();
-    pdu->choice.initiatingMessage->procedureCode = ASN_NGAP_ProcedureCode_id_PathSwitchRequest;
-    pdu->choice.initiatingMessage->criticality = ASN_NGAP_Criticality_reject;
-    pdu->choice.initiatingMessage->value.present = ASN_NGAP_InitiatingMessage__value_PR_PathSwitchRequest;
- 
-    // Send the prepared Path Switch Request
-    sendNgapUeAssociatedPathSwitchReq(ueId, pdu, pduSessionResource, ueSecurityCapability);
-}
+    ue->amfUeNgapId = sourceAmfUeId;
+    amf->nextStream = (amf->nextStream % (amf->association.outStreams - 1)) + 1;
+    ue->uplinkStream = amf->nextStream;
+    const std::string gtpIp = m_base->config->gtpAdvertiseIp.value_or(m_base->config->gtpIp);
+    resource->downTunnel.address = utils::IpToOctetString(gtpIp);
+    resource->downTunnel.teid = ++m_downlinkTeidCounter;
+    if (!resource->downTunnel.teid)
+        resource->downTunnel.teid = ++m_downlinkTeidCounter;
+    // A source session AMBR is not a UE AMBR; retain independently known UE limits.
+    auto *pdu = asn::ngap::NewMessagePdu<ASN_NGAP_PathSwitchRequest>({});
+    if (sendNgapUeAssociatedPathSwitchReq(ueId, pdu, *resource, ueSecurityCapability))
+    {
+        m_pendingPathSwitches.emplace(key, PendingPathSwitch{std::move(resource), amf->ctxId,
+                                                           utils::CurrentTimeMillis()});
+        m_logger->info("Path Switch Request sent for UE[%d]", ueId);
+    }
 }
 
-
+void NgapTask::expirePathSwitches()
+{
+    const auto now = utils::CurrentTimeMillis();
+    for (auto it = m_pendingPathSwitches.begin(); it != m_pendingPathSwitches.end();)
+    {
+        if (now - it->second.startedAt >= 10000)
+        {
+            m_logger->warn("Path switch timed out for UE[%d] PSI[%d]; source session retained",
+                           it->second.resource->ueId, it->second.resource->psi);
+            it = m_pendingPathSwitches.erase(it);
+        }
+        else
+            ++it;
+    }
+}
+} // namespace nr::gnb

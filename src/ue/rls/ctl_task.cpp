@@ -58,11 +58,7 @@ void RlsControlTask::onLoop()
             handleSignalChange(w.cellId, w.dbm);
             break;
         case NmUeRlsToRls::RECEIVE_RLS_MESSAGE:
-            if (w.msg->msgType == rls::EMessageType::SESSION_TRANSMISSION)
-            {
-                oldCell = w.old_cellId;
-            }
-            handleRlsMessage(w.cellId, *w.msg);
+            handleRlsMessage(w.cellId, w.old_cellId, *w.msg);
             break;
         case NmUeRlsToRls::UPLINK_DATA:
             handleUplinkDataDelivery(w.psi, std::move(w.data));
@@ -103,7 +99,7 @@ void RlsControlTask::onQuit()
 {
 }
 
-void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
+void RlsControlTask::handleRlsMessage(int cellId, int sourceCell, rls::RlsMessage &msg)
 {
     if (msg.msgType == rls::EMessageType::PDU_TRANSMISSION_ACK)
     {
@@ -146,17 +142,28 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
     }
     else if (msg.msgType == rls::EMessageType::SESSION_TRANSMISSION)
     {
-        if (oldCell != cellId)
+        auto &m = (rls::RlsSessionTransmission &)msg;
+        if (m.m_pduSession && sourceCell > 0 && cellId > 0 && sourceCell != cellId)
         {
+            const int psi = m.m_pduSession->psi;
+            const auto now = utils::CurrentTimeMillis();
+            auto pending = m_pendingHandovers.find(psi);
+            if (pending != m_pendingHandovers.end() && now - pending->second.sentAt <= 10000)
+            {
+                m_logger->warn("Ignoring overlapping handover for PDU session [%d]", psi);
+                return;
+            }
+            m_pendingHandovers[psi] = {sourceCell, m.pduId, cellId, now};
             m_logger->info("Handover Request Received.");
-            auto &m = (rls::RlsSessionTransmission &)msg;
             rls::RlsSessionTransmission msg{m_shCtx->sti};
             msg.payload = static_cast<uint32_t>(m.payload);
             msg.pduId = m.pduId;
-            oldUeId = m.pduId;
             msg.amfId = m.amfId;
             msg.m_pduSession = std::move(m.m_pduSession);
-            msg.m_ueSecurityCapability = std::move(m_ueSecurityCapability);
+            {
+                std::lock_guard<std::mutex> lock(m_shCtx->securityMutex);
+                msg.m_ueSecurityCapability = m_shCtx->ueSecurityCapability;
+            }
             msg.check = true;
             m_udpTask->send(cellId, msg);
         }
@@ -164,10 +171,19 @@ void RlsControlTask::handleRlsMessage(int cellId, rls::RlsMessage &msg)
     else if (msg.msgType == rls::EMessageType::XN_SESSION_TRANSMISSION)
     {
         auto &m = (rls::RlsXnSessionTransmission &)msg;
+        auto pending = m_pendingHandovers.find(static_cast<int>(m.payload));
+        if (pending == m_pendingHandovers.end() || pending->second.targetCell != cellId ||
+            utils::CurrentTimeMillis() - pending->second.sentAt > 10000)
+        {
+            m_logger->warn("Ignoring unmatched handover completion for PDU session [%u]", m.payload);
+            return;
+        }
+        const auto source = pending->second;
+        m_pendingHandovers.erase(pending);
         rls::RlsTerminateSession msg{m_shCtx->sti};
-        msg.pduId = oldUeId;
+        msg.pduId = source.sourceUeId;
         msg.psi = m.payload;
-        m_udpTask->send(oldCell, msg);
+        m_udpTask->send(source.sourceCell, msg);
 
         auto w = std::make_unique<NmUeRlsToRls>(NmUeRlsToRls::ESTABLISH_CONNECTION);
         w->psi = m.payload;
@@ -241,6 +257,13 @@ void RlsControlTask::handleUplinkDataDelivery(int psi, OctetString &&data)
 void RlsControlTask::onAckControlTimerExpired()
 {
     int64_t current = utils::CurrentTimeMillis();
+    for (auto pending = m_pendingHandovers.begin(); pending != m_pendingHandovers.end();)
+    {
+        if (current - pending->second.sentAt > 10000)
+            pending = m_pendingHandovers.erase(pending);
+        else
+            ++pending;
+    }
 
     std::vector<uint32_t> transmissionFailureIds;
     std::vector<rls::PduInfo> transmissionFailures;

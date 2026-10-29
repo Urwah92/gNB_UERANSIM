@@ -11,4 +11,10 @@ target_link_libraries(common-lib utils)
 target_link_libraries(common-lib asn-ngap)
 target_link_libraries(common-lib asn-rrc)
 
-target_link_libraries(common-lib sctp) # Linux SCTP
+find_path(SCTP_INCLUDE_DIR netinet/sctp.h)
+find_library(SCTP_LIBRARY NAMES sctp)
+if(NOT SCTP_INCLUDE_DIR OR NOT SCTP_LIBRARY)
+    message(FATAL_ERROR "SCTP development files are required. Install libsctp-dev (Ubuntu/Debian), or set SCTP_INCLUDE_DIR and SCTP_LIBRARY.")
+endif()
+target_include_directories(common-lib PRIVATE ${SCTP_INCLUDE_DIR})
+target_link_libraries(common-lib ${SCTP_LIBRARY})

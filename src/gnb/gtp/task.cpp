@@ -44,8 +44,12 @@ void GtpTask::onStart()
 
 void GtpTask::onQuit()
 {
-    m_udpServer->quit();
-    delete m_udpServer;
+    if (m_udpServer)
+    {
+        m_udpServer->quit();
+        delete m_udpServer;
+        m_udpServer = nullptr;
+    }
 
     m_ueContexts.clear();
 }
@@ -90,23 +94,44 @@ void GtpTask::onLoop()
                 break;
             }
             case NmGnbRlsToGtp::DATA_PDU_RELEASE: {
-                if (!m_ueContexts.count(w.ueId))
+                // Export an independent context. The source tunnel remains live until target confirmation.
+                std::vector<uint64_t> sessions;
+                if (w.psi == 0)
+                    m_sessionTree.enumerateByUe(w.ueId, sessions);
+                else
+                    sessions.push_back(MakeSessionResInd(w.ueId, w.psi));
+                for (const auto key : sessions)
                 {
-                    m_logger->err("PDU session resource could not be changed, UE context with ID[%d] not found", w.ueId);
-                    return;
-                }
-                auto m = std::make_unique<NmGnbGtpToNgap>(NmGnbGtpToNgap::DATA_PDU_INFO);
-                uint64_t sessionInd = MakeSessionResInd(w.ueId, w.psi);
-                m->ueId = w.ueId;
-                m->psi = w.psi;
-                m->m_pduSession = std::move(m_pduSessions[sessionInd]);
-                m_base->ngapTask->push(std::move(m));
-                auto it = std::find(NtsTask::ueIdPsi.ueIdList.begin(), NtsTask::ueIdPsi.ueIdList.end(), w.ueId);
-                if (it != NtsTask::ueIdPsi.ueIdList.end())
-                {
-                    int index = std::distance(NtsTask::ueIdPsi.ueIdList.begin(), it);
-                    NtsTask::ueIdPsi.ueIdList.erase(it); 
-                    NtsTask::ueIdPsi.uePsiList.erase(NtsTask::ueIdPsi.uePsiList.begin() + index);  // Remove from uePsiList 
+                    auto found = m_pduSessions.find(key);
+                    if (found == m_pduSessions.end() || !found->second || !found->second->qosFlows)
+                        continue;
+                    const auto &source = *found->second;
+                    auto copy = std::make_unique<PduSessionResource>(source.ueId, source.psi);
+                    copy->sessionAmbr = source.sessionAmbr;
+                    copy->dataForwardingNotPossible = source.dataForwardingNotPossible;
+                    copy->sessionType = source.sessionType;
+                    copy->upTunnel.teid = source.upTunnel.teid;
+                    copy->upTunnel.address = source.upTunnel.address.copy();
+                    copy->downTunnel.teid = source.downTunnel.teid;
+                    copy->downTunnel.address = source.downTunnel.address.copy();
+                    // Relayed sessions carry accepted QFIs, not full QoS setup descriptors.
+                    // Copy those identifiers directly so a second handover can export an imported session too.
+                    copy->qosFlows = asn::WrapUnique(asn::New<ASN_NGAP_QosFlowSetupRequestList>(),
+                                                     asn_DEF_ASN_NGAP_QosFlowSetupRequestList);
+                    for (int i = 0; i < source.qosFlows->list.count; ++i)
+                    {
+                        const auto *sourceFlow = source.qosFlows->list.array[i];
+                        if (!sourceFlow)
+                            continue;
+                        auto *flow = asn::New<ASN_NGAP_QosFlowSetupRequestItem>();
+                        flow->qosFlowIdentifier = sourceFlow->qosFlowIdentifier;
+                        asn::SequenceAdd(*copy->qosFlows, flow);
+                    }
+                    auto exported = std::make_unique<NmGnbGtpToNgap>(NmGnbGtpToNgap::DATA_PDU_INFO);
+                    exported->ueId = source.ueId;
+                    exported->psi = source.psi;
+                    exported->m_pduSession = std::move(copy);
+                    m_base->ngapTask->push(std::move(exported));
                 }
                 break;
             }
@@ -133,84 +158,54 @@ void GtpTask::handleUeContextUpdate(const GtpUeContextUpdate &msg)
     updateAmbrForUe(ue->ueId);
 }
 
-void GtpTask::handleSessionCreate(PduSessionResource *session)
+void GtpTask::handleSessionCreate(PduSessionResource *resource)
 {
-    if (!m_ueContexts.count(session->ueId))
+    std::unique_ptr<PduSessionResource> session(resource);
+    if (!session || !m_ueContexts.count(session->ueId))
     {
-        m_logger->err("PDU session resource could not be created, UE context with ID[%d] not found", session->ueId);
+        m_logger->err("PDU session resource cannot be created without UE context");
         return;
     }
-    //Urwah
-    auto it = std::find(NtsTask::ueIdPsi.ueIdList.begin(), NtsTask::ueIdPsi.ueIdList.end(), session->ueId);
-    if (it != NtsTask::ueIdPsi.ueIdList.end())
-    {
-    }
-    else{
-        NtsTask::ueIdPsi.ueIdList.push_back(session->ueId);
-        NtsTask::ueIdPsi.uePsiList.push_back(session->psi); 
-    }
-    uint64_t sessionInd = MakeSessionResInd(session->ueId, session->psi);
-    m_pduSessions[sessionInd] = std::unique_ptr<PduSessionResource>(session);
-    m_sessionTree.insert(sessionInd, session->downTunnel.teid);
-    updateAmbrForUe(session->ueId);
-    updateAmbrForSession(sessionInd);
+    const auto key = MakeSessionResInd(session->ueId, session->psi);
+    const auto old = m_pduSessions.find(key);
+    if (old != m_pduSessions.end() && old->second)
+        m_sessionTree.remove(key, old->second->downTunnel.teid);
+    const auto teid = session->downTunnel.teid;
+    const auto ueId = session->ueId;
+    m_pduSessions[key] = std::move(session);
+    m_sessionTree.insert(key, teid);
+    updateAmbrForUe(ueId);
+    updateAmbrForSession(key);
 }
 
 void GtpTask::handleSessionRelease(int ueId, int psi)
 {
-    if (!m_ueContexts.count(ueId))
-    {
-        m_logger->err("PDU session resource could not be released, UE context with ID[%d] not found", ueId);
+    const auto key = MakeSessionResInd(ueId, psi);
+    const auto found = m_pduSessions.find(key);
+    if (found == m_pduSessions.end())
         return;
-    }
-
-    uint64_t sessionInd = MakeSessionResInd(ueId, psi);
-
-    // Remove all session information from rate limiter
-    m_rateLimiter->updateSessionUplinkLimit(sessionInd, 0);
-    m_rateLimiter->updateUeDownlinkLimit(ueId, 0);
-
-    // And remove from PDU session table
-    if (m_pduSessions.count(sessionInd))
-    {
-        uint32_t teid = m_pduSessions[sessionInd]->downTunnel.teid;
-        m_pduSessions.erase(sessionInd);
-
-        // And remove from the tree
-        m_sessionTree.remove(sessionInd, teid);
-    }
+    m_rateLimiter->updateSessionUplinkLimit(key, 0);
+    m_rateLimiter->updateSessionDownlinkLimit(key, 0);
+    if (found->second)
+        m_sessionTree.remove(key, found->second->downTunnel.teid);
+    m_pduSessions.erase(found);
 }
 
 void GtpTask::handleUeContextDelete(int ueId)
 {
-    // Find PDU sessions of the UE
-    std::vector<uint64_t> sessions{};
+    std::vector<uint64_t> sessions;
     m_sessionTree.enumerateByUe(ueId, sessions);
-
-    for (auto &session : sessions)
-    {
-        // Remove all session information from rate limiter
-        m_rateLimiter->updateSessionUplinkLimit(session, 0);
-        m_rateLimiter->updateUeDownlinkLimit(ueId, 0);
-
-        // And remove from PDU session table
-        uint32_t teid = m_pduSessions[session]->downTunnel.teid;
-        m_pduSessions.erase(session);
-
-        // And remove from the tree
-        m_sessionTree.remove(session, teid);
-    }
-
-    // Remove all user information from rate limiter
+    for (const auto key : sessions)
+        handleSessionRelease(ueId, GetPsi(key));
     m_rateLimiter->updateUeUplinkLimit(ueId, 0);
     m_rateLimiter->updateUeDownlinkLimit(ueId, 0);
-
-    // Remove UE context
     m_ueContexts.erase(ueId);
 }
 
 void GtpTask::handleUplinkData(int ueId, int psi, OctetString &&pdu)
 {
+    if (pdu.length() < 20)
+        return;
     const uint8_t *data = pdu.data();
     if ((data[0] >> 4 & 0xF) != 4)
         {
@@ -254,6 +249,9 @@ void GtpTask::handleUdpReceive(const udp::NwUdpServerReceive &msg)
 {
     OctetView buffer{msg.packet};
     auto gtp = gtp::DecodeGtpMessage(buffer);
+
+    if (!gtp)
+        return;
 
     switch (gtp->msgType)
     {

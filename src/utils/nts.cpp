@@ -14,9 +14,6 @@
 #define WAIT_TIME_IF_NO_TIMER 500
 #define PAUSE_POLLING_PERIOD 20
 
-//Urwah
-nas::IEUeSecurityCapability NtsTask::m_ueSecurityCapability;
-
 static std::unique_ptr<NtsMessage> TimerExpiredMessage(TimerInfo *timerInfo)
 {
     return timerInfo ? std::make_unique<NmTimerExpired>(timerInfo->timerId) : nullptr;

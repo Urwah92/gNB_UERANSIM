@@ -68,6 +68,15 @@ bool GnbCmdHandler::isAllPaused()
 
 void GnbCmdHandler::handleCmd(NmGnbCliCommand &msg)
 {
+    if (m_base->config->wifi)
+    {
+        if (msg.cmd->present == app::GnbCliCommand::STATUS || msg.cmd->present == app::GnbCliCommand::INFO)
+            sendResult(msg.address, Json::Obj({{"role", "wifi-ap"}, {"link-ip", m_base->config->linkIp},
+                {"ue-interface", m_base->config->ueInterface}, {"uplink-interface", m_base->config->interface}}).dumpYaml());
+        else
+            sendError(msg.address, "Cellular commands are unavailable in Wi-Fi AP mode");
+        return;
+    }
     pauseTasks();
 
     uint64_t currentTime = utils::CurrentTimeMillis();

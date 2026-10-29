@@ -47,6 +47,7 @@ namespace nr::ue
 
 class UeRrcTask : public NtsTask
 {
+    friend struct UeHandoverTest;
   private:
     TaskBase *m_base;
     std::unique_ptr<Logger> m_logger;

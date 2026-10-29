@@ -38,6 +38,7 @@ extern "C"
     struct ASN_NGAP_PDUSessionResourceReleaseCommand;
     struct ASN_NGAP_Paging;
     struct ASN_NGAP_PathSwitchRequestAcknowledge;
+    struct ASN_NGAP_PathSwitchRequestFailure;
 }
 
 namespace nr::gnb
@@ -59,12 +60,17 @@ class NgapTask : public NtsTask
     int64_t m_ueNgapIdCounter;
     uint32_t m_downlinkTeidCounter;
     bool m_isInitialized;
-    //Urwah
-    std::unordered_map<uint64_t, std::unique_ptr<PduSessionResource>> m_pduSessions;
-    PduSessionResource *m_pathSwitchPduSession;
-    int m_pathSwitchReqUeId = 0;
+    struct PendingPathSwitch
+    {
+        std::unique_ptr<PduSessionResource> resource;
+        int amfId;
+        int64_t startedAt;
+    };
+    // The response identifies a UE by NGAP IDs and each session by PSI.
+    std::unordered_map<uint64_t, PendingPathSwitch> m_pendingPathSwitches;
 
     friend class GnbCmdHandler;
+    friend struct GnbHandoverTest;
 
   public:
     explicit NgapTask(TaskBase *base);
@@ -96,6 +102,8 @@ class NgapTask : public NtsTask
     void receiveNgSetupResponse(int amfId, ASN_NGAP_NGSetupResponse *msg);
     //Urwah
     void receivePSRAck(int amfId, ASN_NGAP_PathSwitchRequestAcknowledge *msg);
+    void receivePathSwitchFailure(int amfId, ASN_NGAP_PathSwitchRequestFailure *msg);
+    void expirePathSwitches();
 
     void receiveNgSetupFailure(int amfId, ASN_NGAP_NGSetupFailure *msg);
     void receiveErrorIndication(int amfId, ASN_NGAP_ErrorIndication *msg);
@@ -107,7 +115,7 @@ class NgapTask : public NtsTask
     void sendNgapNonUe(int amfId, ASN_NGAP_NGAP_PDU *pdu);
     void sendNgapUeAssociated(int ueId, ASN_NGAP_NGAP_PDU *pdu);
     //Urwah
-    void sendNgapUeAssociatedPathSwitchReq(int ueId, ASN_NGAP_NGAP_PDU *pdu, const PduSessionResource& pduSessionResource,
+    bool sendNgapUeAssociatedPathSwitchReq(int ueId, ASN_NGAP_NGAP_PDU *pdu, const PduSessionResource& pduSessionResource,
                 const nas::IEUeSecurityCapability ueSecurityCapability);
     //ASN_NGAP_PDUSessionResourceToBeSwitchedDLList PDUSessionResourceToBeSwitchedDLList(const PduSessionResource& pduSessionResource);
 
@@ -124,8 +132,8 @@ class NgapTask : public NtsTask
     void sendNasNonDeliveryIndication(int ueId, const OctetString &nasPdu, NgapCause cause);
     void receiveRerouteNasRequest(int amfId, ASN_NGAP_RerouteNASRequest *msg);
     //Urwah
-    void handlePathSwitchRequest(int ueId, int amfId, const PduSessionResource &pduSessionResource, 
-                                        const nas::IEUeSecurityCapability ueSecurityCapability);
+    void handlePathSwitchRequest(int ueId, int64_t sourceAmfUeId, std::unique_ptr<PduSessionResource> resource,
+                                 const nas::IEUeSecurityCapability &ueSecurityCapability);
 /* PDU session management */
     void receiveSessionResourceSetupRequest(int amfId, ASN_NGAP_PDUSessionResourceSetupRequest *msg);
     void receiveSessionResourceReleaseCommand(int amfId, ASN_NGAP_PDUSessionResourceReleaseCommand *msg);

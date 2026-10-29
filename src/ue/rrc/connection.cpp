@@ -163,6 +163,9 @@ void UeRrcTask::handoverToTargetCellPreservingContext(int newCellId) {
     if (hasSignalToCell(newCellId)) {
 
         ActiveCellInfo lastActiveCell = m_base->shCtx.currentCell.get();
+        // Multiple sessions can complete the same handover independently.
+        if (lastActiveCell.cellId == newCellId)
+            return;
         m_base->shCtx.currentCell.mutate([&](auto &activeCell) {
             activeCell.cellId = newCellId;  
             activeCell.plmn = lastActiveCell.plmn;  

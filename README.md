@@ -1,57 +1,123 @@
-<p align="center">
-  <a href="https://github.com/aligungr/UERANSIM"><img src="/.github/logo.png" width="75" title="UERANSIM"></a>
-</p>
-<p align="center">
-<img src="https://img.shields.io/badge/UERANSIM-v3.2.6-blue" />
-<img src="https://img.shields.io/badge/3GPP-R15-orange" />
-<img src="https://img.shields.io/badge/License-GPL--3.0-green"/>
-</p>
+# Unified UERANSIM: UE, gNB and simulated Wi-Fi AP
 
-**UERANSIM** <small>(pronounced "ju-i ræn sɪm")</small>, is the open source state-of-the-art 5G UE and RAN (gNodeB)
-simulator. UE and RAN can be considered as a 5G mobile phone and a base station in basic terms. The project can be used for
-testing 5G Core Network and studying 5G System.
+One source tree builds matching UE and gNB implementations, with mobility,
+UE-relayed inter-gNB handover using NGAP path switching, and a separate simulated
+Wi-Fi gateway/station mode. Both original repositories remain independent.
 
-UERANSIM introduces the world's first and only open source 5G-SA UE and gNodeB implementation.
+Session context travels source gNB → UE → target gNB; the target sends an NGAP
+Path Switch Request to the AMF. This is a custom handover simulation. Direct XnAP,
+native 802.11 association, and simultaneous cellular/Wi-Fi UE attachment are outside its scope.
 
-**WARNING:** I'm no longer active in the development of UERANSIM. However community contributions are welcomed.
+## Build and test
 
-## Current Status
+On Ubuntu/Debian:
 
-Basic functionalities of UE and gNodeB are fully functional and ready to use. However some of the features are not complete.
-More details can be found at [Feature Set](https://github.com/aligungr/UERANSIM/wiki/Feature-Set).
+```sh
+sudo apt-get install build-essential cmake libsctp-dev lksctp-tools iproute2 iptables
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 4
+ctest --test-dir build --output-on-failure
+```
 
-On the other hand, UERANSIM does not fully provide physical layer. 5G-NR radio interface is partially implemented, and simply simulated over UDP protocol.
+Outputs: `build/nr-gnb`, `build/nr-ue`, `build/nr-cli`, `build/libdevbnd.so`.
+`make` also builds these targets and copies `nr-binder` into `build/`.
+Python 3 enables parser regression tests. The default tests need no sockets or 5G core.
+For a custom SCTP prefix, set `SCTP_INCLUDE_DIR` and `SCTP_LIBRARY` with CMake.
 
-<p align="center">
-<img src="https://img.shields.io/badge/Radio%20Interface-simulated-orange" alt="OS Linux"/>
-<img src="https://img.shields.io/badge/Control%20Plane-functional-green" alt="OS Linux"/>  
-<img src="https://img.shields.io/badge/User%20Plane-functional-green" alt="OS Linux"/>
-</p>
+Optional runtime tests start real AP/UE processes over loopback UDP. Every
+`ip`, `iptables`, and `tc` invocation is mocked; they do not configure host networking:
 
-## Documentation
+```sh
+cmake -S . -B build -DUERANSIM_NETWORK_TESTS=ON
+ctest --test-dir build --output-on-failure
+```
 
-You can find the documentation on [UERANSIM Wiki](https://github.com/aligungr/UERANSIM/wiki).
+These optional tests require permission to create local sockets.
 
-And, since the project is rapidly developing, please make sure that you have always
-the [latest](https://github.com/aligungr/UERANSIM/releases) UERANSIM.
+## Validate configurations
 
-## Contributing
+`--check-config` opens no sockets, creates no logs and changes no networking:
 
-Any contributions you make are greatly appreciated via [Pull Request](https://github.com/aligungr/UERANSIM/pulls).
+```sh
+./build/nr-gnb -c config/examples/source-gnb.yaml --check-config
+./build/nr-gnb -c config/examples/target-gnb.yaml --check-config
+./build/nr-gnb -c config/examples/wifi-ap.yaml --check-config
+./build/nr-ue -c config/examples/ue-5g.yaml --check-config
+./build/nr-ue -c config/examples/ue-wifi.yaml --check-config
+```
 
-## Supporting
+## Cellular handover example
 
-You can support UERANSIM by:
+Configure your existing core for PLMN `208/93`, SST `1`, SD `010203`, DNN `internet`,
+and the subscriber credentials in `ue-5g.yaml`. The example AMF is at
+`127.0.0.5:38412`; adjust this and the local bind addresses for your lab. Your
+AMF/SMF must support path switching and update the UPF tunnel.
 
-- Starring the GitHub repository,
-- Donating on [Open Collective](https://opencollective.com/UERANSIM)
-- Creating pull requests, submitting bugs, suggesting new features or documentation updates.
+Run each command in a separate terminal from this directory:
 
-## License
+```sh
+./build/nr-gnb -c config/examples/source-gnb.yaml
+./build/nr-gnb -c config/examples/target-gnb.yaml
+sudo ./build/nr-ue -c config/examples/ue-5g.yaml
+```
 
-Copyright (c) 2023 ALİ GÜNGÖR.
+The gNBs bind `127.0.0.2` and `127.0.0.3`, with distinct node IDs. The UE moves
+from coordinate 0 to 180 at 10 metres/second. The inherited signal model approximates
+dBm as negative distance in metres, with coverage ending at 120 m; these cells
+therefore overlap. This is a mobility abstraction, not an RF propagation model.
 
-All source code and related files including documentation and wiki pages are
-dual licensed with [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html) and a commercial license.
+Look for `Path Switch Request sent`, `Path switch complete`, and
+`Released source handover session` in logs. Verify bidirectional traffic on the
+UE TUN before and after switching: signaling logs alone do not prove continuity.
 
-Commercial usage of UERANSIM is **not** permitted with the GPL-3.0. If that license is not compatable with your use case, please contact [ueransim@gmail.com](mailto:ueransim@gmail.com) to buy a commercial license.
+## Separate Wi-Fi gateway/station example
+
+Use separate lab nodes or namespaces, with interfaces configured before starting:
+
+| Role | Configuration |
+| --- | --- |
+| AP | `eth0 = 10.200.0.1/24`, separate routed uplink `eth1`, IPv4 forwarding enabled |
+| UE | `eth0 = 10.200.0.2/24`, gateway `10.200.0.1` reachable on that interface |
+
+Provide upstream return routes for `10.200.0.0/24`, or configure NAT in your lab.
+The program does not automatically enable forwarding or configure NAT.
+
+```sh
+# In the AP node/namespace:
+sudo ./build/nr-gnb -c config/examples/wifi-ap.yaml
+
+# In the Wi-Fi UE node/namespace:
+sudo ./build/nr-ue -c config/examples/ue-wifi.yaml
+ping -I 10.200.0.2 <reachable-upstream-address>
+```
+
+Wi-Fi UE mode uses the configured Linux interface and source-specific routing.
+It creates no cellular TUN and performs no NAS registration. Bind traffic to
+`staticIP` so the policy rule selects the Wi-Fi gateway.
+
+The AP manages its own `UERANSIM_<gnb-id>` firewall chain and two interface-specific
+FORWARD hooks. The UE manages its source rule and route in `wifiRoutingTable`
+(default 10001, route protocol 186). Give each AP a distinct gNB ID and each Wi-Fi
+UE a dedicated routing table. Wi-Fi `-n` greater than one is rejected; run separate
+configured instances instead. Ctrl-C/SIGTERM cleans up owned rules. SIGKILL cannot
+run cleanup; see [recovery instructions](docs/INTEGRATION.md#forced-termination-recovery).
+
+## Mobility settings
+
+- UE `phyLocation` has equal, nonempty `x`, `y`, `z` integer arrays; gNB coordinates
+  are scalars. Missing coordinates default to the origin.
+- `velocity` is a finite nonnegative speed in metres/second; zero is stationary.
+  The legacy `mobility` key remains accepted, with `velocity` taking precedence.
+- `pattern: linear` stops at the final waypoint; `pattern: loop` returns to the start.
+- Optional `trafficShapingInterface` enables Linux netem delay/loss simulation.
+  It is disabled by default; use a dedicated lab interface.
+
+The original `custom-*`, `open5gs-*`, and `free5gc-*` configurations remain available.
+Align their credentials, core addresses, slices and DNNs with your deployment.
+
+See [integration details](docs/INTEGRATION.md) for source commits, fixes, protocol
+compatibility and remaining limitations. Live-core handover and actual kernel
+forwarding still need testing in your lab.
+
+Original documentation: [upstream README](docs/UPSTREAM_README.md).
+Existing copyright notices and [LICENSE](LICENSE) are preserved.

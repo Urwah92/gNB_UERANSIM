@@ -28,8 +28,11 @@ UserEquipment::UserEquipment(UeConfig *config, app::IUeController *ueController,
     base->cliCallbackTask = cliCallbackTask;
     UserEquipment::wifiAP = base->config->wifi;
 
-    base->nasTask = new NasTask(base);
-    base->rrcTask = new UeRrcTask(base);
+    if (!wifiAP)
+    {
+        base->nasTask = new NasTask(base);
+        base->rrcTask = new UeRrcTask(base);
+    }
     base->appTask = new UeAppTask(base);
     base->rlsTask = new UeRlsTask(base);
     taskBase = base;
@@ -37,8 +40,11 @@ UserEquipment::UserEquipment(UeConfig *config, app::IUeController *ueController,
 
 UserEquipment::~UserEquipment()
 {
-    taskBase->nasTask->quit();
-    taskBase->rrcTask->quit();
+    if (!wifiAP)
+    {
+        taskBase->nasTask->quit();
+        taskBase->rrcTask->quit();
+    }
     taskBase->rlsTask->quit();
     taskBase->appTask->quit();
 

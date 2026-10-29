@@ -4,6 +4,8 @@ project(ueransim)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 11)
 
+include(CTest)
+
 include_directories(src)
 
 #################### SUB DIRECTORIES ####################
@@ -51,3 +53,7 @@ target_link_libraries(nr-cli pthread)
 target_compile_options(nr-cli PRIVATE -Wall -Wextra -pedantic)
 
 target_link_libraries(nr-cli common-lib)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
