@@ -68,4 +68,4 @@ For `sessions`, `default-nssai` and `configured-nssai`, a slice `sd` is optional
 
 Wi-Fi mode accepts only one UE per process; do not use `nr-ue -n 2` with `wifi: true`. It discovers APs from `gnbSearchList`, chooses one based on simulated signal, and installs a route/rule for traffic **sourced from `staticIP`**. Applications must bind to that source address (for example `ping -I 10.1.1.2 ...`) to use the selected gateway. You must assign the IP to the interface before starting; `--check-config` only validates the YAML, while normal startup checks the live interface and bind address.
 
-The UE configuration does not set a Linux default route for every process, and the AP does not automatically configure upstream routes or NAT. See the [README network steps](../README.md#4b-run-the-simulated-wi-fi-ap-and-station).
+The UE configuration does not set a Linux default route for every process, and the AP does not automatically configure upstream routes or NAT. See the [README setup guide](../README.md).

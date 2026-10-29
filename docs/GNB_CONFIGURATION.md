@@ -49,4 +49,4 @@ The derived gNB ID is `nci >> (36 - idLength)`. For example, `nci: '0x000000001'
 
 AP interface names must be distinct, valid Linux names of at most 15 characters. The AP installs an `iptables` forwarding chain between these two interfaces. It does not assign their IP addresses, enable kernel IPv4 forwarding, or create upstream routes/NAT. Configure those in your lab/container network.
 
-The old `sessionIP` and `nextHop` keys are **not read by this gNB parser**. A Wi-Fi UE's address belongs in its own `staticIP`, and the AP's Linux uplink/interface configuration determines its next hop. See the [UE YAML reference](UE_CONFIGURATION.md) and the [README container walkthrough](../README.md).
+The old `sessionIP` and `nextHop` keys are **not read by this gNB parser**. A Wi-Fi UE's address belongs in its own `staticIP`, and the AP's Linux uplink/interface configuration determines its next hop. See the [UE YAML reference](UE_CONFIGURATION.md) and the [README setup guide](../README.md).
