@@ -10,6 +10,9 @@ add_test(NAME mobility COMMAND mobility-tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME build-relocation COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/build_relocation_test.py
+        ${PROJECT_SOURCE_DIR}/tools/configure-build.sh)
+    set_tests_properties(build-relocation PROPERTIES TIMEOUT 30)
     add_test(NAME ue-config COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/ue_config_test.py
         $<TARGET_FILE:nr-ue>
         ${PROJECT_SOURCE_DIR}/config/examples/ue-5g.yaml

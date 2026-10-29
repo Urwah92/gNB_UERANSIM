@@ -62,8 +62,9 @@ counts, PSI, QFI and tunnel addresses before consuming bytes.
 ## Verification and limits
 
 Local verification on 2026-10-29: Ubuntu 22.04, GCC 11.4, CMake 3.22.1, Debug build.
-All binaries compiled, all nine default CTest cases passed, and the optional Wi-Fi
-runtime case passed (10/10 with it enabled). The UE parser covers 23 scenarios;
+All binaries compiled and all 10 default CTest cases passed, including copied/moved
+build-cache regression checks. The optional Wi-Fi runtime case also passed with
+real loopback sockets and mocked network commands. The UE parser covers 23 scenarios;
 the AP parser covers 20. Codec tests also passed under AddressSanitizer and
 UndefinedBehaviorSanitizer; LeakSanitizer was unavailable under sandbox ptrace.
 SCTP development headers were extracted into ignored `.deps/sctp` for this build,

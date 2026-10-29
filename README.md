@@ -24,6 +24,25 @@ Outputs: `build/nr-gnb`, `build/nr-ue`, `build/nr-cli`, `build/libdevbnd.so`.
 Python 3 enables parser regression tests. The default tests need no sockets or 5G core.
 For a custom SCTP prefix, set `SCTP_INCLUDE_DIR` and `SCTP_LIBRARY` with CMake.
 
+### Copying the project to another machine or directory
+
+Build directories contain absolute paths and must be regenerated at the destination.
+When `make` detects a cache from a different source or build directory, it preserves
+the previous output as `build.stale` (or a numbered backup) and configures a fresh
+`build/`. It then discovers dependencies on the destination machine.
+
+For an older copied version that does not include this handling:
+
+```sh
+cd /Final_UERANSIM
+mv build build-copied
+make
+```
+
+Use an unused backup name if `build-copied` already exists. Install `libsctp-dev`
+on the destination if CMake reports missing SCTP development files. When invoking
+CMake directly, choose a new build directory instead of reusing a copied cache.
+
 Optional runtime tests start real AP/UE processes over loopback UDP. Every
 `ip`, `iptables`, and `tc` invocation is mocked; they do not configure host networking:
 
