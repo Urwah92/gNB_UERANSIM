@@ -8,6 +8,7 @@
 
 #include "udp_task.hpp"
 
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <unistd.h>
 
 #include <gnb/nts.hpp>
+#include <lib/app/base_app.hpp>
 #include <utils/common.hpp>
 #include <utils/constants.hpp>
 #include <utils/libc_error.hpp>
@@ -71,20 +73,45 @@ void RlsUdpTask::onStart()
 {
     if (!m_wifi)
         return;
-    if (utils::RunCommand({"iptables", "-w", "-N", m_chain}) != 0)
+    const auto run = [this](const std::vector<std::string> &arguments, const char *operation) {
+        const auto result = utils::RunCommandDetailed(arguments);
+        if (result.spawnError)
+        {
+            if (result.spawnError == ENOENT)
+                m_logger->err("AP firewall setup failed: iptables was not found in PATH. Install iptables or add its directory to PATH");
+            else
+                m_logger->err("AP firewall setup could not run iptables for %s: errno[%d] %s", operation,
+                              result.spawnError, std::strerror(result.spawnError));
+        }
+        else if (result.signal)
+            m_logger->err("AP firewall setup iptables command for %s was terminated by signal[%d]", operation,
+                          result.signal);
+        else if (result.exitCode)
+            m_logger->err("AP firewall setup iptables command for %s failed with exit code[%d]; see command stderr above",
+                          operation, result.exitCode);
+        else
+            return true;
+
+        if (!result.spawnError)
+            m_logger->err("Inspect the firewall with: iptables -w -S %s", m_chain.c_str());
+        return false;
+    };
+    if (!run({"iptables", "-w", "-N", m_chain}, "chain creation"))
     {
-        m_logger->err("Cannot create AP firewall chain[%s]; use a distinct gNB ID and root privileges", m_chain.c_str());
+        // Creation failed: this process does not own the chain and must leave it untouched.
+        app::RequestShutdown(1);
         return;
     }
     m_ownsFirewall = true;
-    if (utils::RunCommand({"iptables", "-w", "-A", m_chain, "-j", "DROP"}) != 0 ||
-        utils::RunCommand({"iptables", "-w", "-I", "FORWARD", "1", "-i", m_ueInterface,
-                           "-o", m_interface, "-j", m_chain}) != 0 ||
-        utils::RunCommand({"iptables", "-w", "-I", "FORWARD", "1", "-i", m_interface,
-                           "-o", m_ueInterface, "-j", m_chain}) != 0)
+    if (!run({"iptables", "-w", "-A", m_chain, "-j", "DROP"}, "default AP drop rule") ||
+        !run({"iptables", "-w", "-I", "FORWARD", "1", "-i", m_ueInterface,
+              "-o", m_interface, "-j", m_chain}, "AP uplink forwarding hook") ||
+        !run({"iptables", "-w", "-I", "FORWARD", "1", "-i", m_interface,
+              "-o", m_ueInterface, "-j", m_chain}, "AP downlink forwarding hook"))
     {
-        m_logger->err("Failed to configure AP forwarding; cleaning up owned rules");
+        m_logger->err("AP startup failed; cleaning up this instance's owned firewall rules");
         clearWifiForwarding();
+        app::RequestShutdown(1);
         return;
     }
     m_firewallReady = true;

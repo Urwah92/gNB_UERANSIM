@@ -17,6 +17,7 @@
 #include <ue/nts.hpp>
 #include <utils/common.hpp>
 #include <utils/constants.hpp>
+#include <utils/libc_error.hpp>
 #include <numeric>
 #include <arpa/inet.h>
 #include <cstring>
@@ -59,7 +60,18 @@ RlsUdpTask::RlsUdpTask(TaskBase *base, RlsSharedContext *shCtx, const std::vecto
 {
     m_logger = base->logBase->makeUniqueLogger(base->config->getLoggerPrefix() + "rls-udp");
 
-    m_server = wifi ? new udp::UdpServer(base->config->staticIP, 0) : new udp::UdpServer();
+    try
+    {
+        m_server = wifi ? new udp::UdpServer(base->config->staticIP, 0) : new udp::UdpServer();
+    }
+    catch (const LibError &error)
+    {
+        if (!wifi)
+            throw;
+        throw std::runtime_error("Could not bind Wi-Fi UDP socket to staticIP '" + base->config->staticIP +
+                                 "' on Interface '" + base->config->interface + "': " + error.what() +
+                                 ". Check 'ip -br -4 addr' in this network namespace");
+    }
     for (auto &ip : searchSpace)
         m_searchSpace.emplace_back(ip, cons::RadioLinkPort);
 }

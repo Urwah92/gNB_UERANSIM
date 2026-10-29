@@ -270,5 +270,5 @@ int main(int argc, char **argv)
     delete g_cliServer;
     delete g_refConfig;
     app::Finalize();
-    return 0;
+    return app::ExitCode();
 }

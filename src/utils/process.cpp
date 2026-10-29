@@ -10,30 +10,40 @@ extern char **environ;
 
 namespace utils
 {
-int RunCommand(const std::vector<std::string> &arguments)
+CommandResult RunCommandDetailed(const std::vector<std::string> &arguments)
 {
     if (arguments.empty() || arguments.front().empty())
-        return EINVAL;
+        return {EINVAL, 0, 0};
     std::vector<char *> argv;
     argv.reserve(arguments.size() + 1);
     for (const auto &argument : arguments)
     {
         if (argument.find('\0') != std::string::npos)
-            return EINVAL;
+            return {EINVAL, 0, 0};
         argv.push_back(const_cast<char *>(argument.c_str()));
     }
     argv.push_back(nullptr);
     pid_t pid{};
     int result = posix_spawnp(&pid, argv.front(), nullptr, nullptr, argv.data(), environ);
     if (result != 0)
-        return result;
+        return {result, 0, 0};
     int status{};
     while (waitpid(pid, &status, 0) == -1)
     {
         if (errno != EINTR)
-            return errno;
+            return {errno, 0, 0};
     }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    if (WIFEXITED(status))
+        return {0, WEXITSTATUS(status), 0};
+    return {0, 0, WTERMSIG(status)};
+}
+
+int RunCommand(const std::vector<std::string> &arguments)
+{
+    const auto result = RunCommandDetailed(arguments);
+    if (result.spawnError)
+        return result.spawnError;
+    return result.signal ? 128 + result.signal : result.exitCode;
 }
 
 bool IsInterfaceName(const std::string &name)

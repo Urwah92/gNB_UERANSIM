@@ -21,6 +21,7 @@ static std::vector<void (*)()> g_runAtExit{};
 static std::vector<std::string> g_deleteAtExit{};
 static volatile std::sig_atomic_t g_shutdownRequested{};
 static std::atomic_bool g_taskShutdownRequested{};
+static std::atomic_int g_exitCode{};
 
 extern "C" void BaseSignalHandler(int num)
 {
@@ -47,9 +48,16 @@ void RunAtExit(void (*fun)())
     g_runAtExit.push_back(fun);
 }
 
-void RequestShutdown()
+void RequestShutdown(int exitCode)
 {
+    if (exitCode != 0)
+        g_exitCode.store(exitCode);
     g_taskShutdownRequested.store(true);
+}
+
+int ExitCode()
+{
+    return g_exitCode.load();
 }
 
 bool ShutdownRequested()

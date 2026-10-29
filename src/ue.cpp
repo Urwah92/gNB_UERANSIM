@@ -8,14 +8,18 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <cmath>
 #include <cctype>
+#include <cstring>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <thread>
 
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <net/if.h>
 
 #include <lib/app/base_app.hpp>
@@ -113,6 +117,63 @@ static std::string ReadInterface(const YAML::Node &config, const std::string &ke
     if (!utils::IsInterfaceName(name))
         throw std::runtime_error("Invalid network interface name in field '" + key + "'");
     return name;
+}
+
+static void CheckWifiNetwork(const nr::ue::UeConfig &config)
+{
+    if (!config.wifi)
+        return;
+
+    const std::string context = "Wi-Fi startup: staticIP '" + config.staticIP + "' on Interface '" + config.interface + "' ";
+    const std::string guidance = ". Check 'ip -br -4 addr' in this network namespace and configure staticIP on "
+                                 "the intended Interface before starting the UE";
+    ifaddrs *raw = nullptr;
+    if (getifaddrs(&raw) != 0)
+        throw std::runtime_error(context + "could not inspect local interfaces: " + std::strerror(errno) + guidance);
+    std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> addresses(raw, freeifaddrs);
+    in_addr requested{};
+    inet_pton(AF_INET, config.staticIP.c_str(), &requested);
+    bool exists = false;
+    bool up = false;
+    bool assigned = false;
+    for (auto *entry = raw; entry; entry = entry->ifa_next)
+    {
+        if (!entry->ifa_name || config.interface != entry->ifa_name)
+            continue;
+        exists = true;
+        up = up || (entry->ifa_flags & IFF_UP);
+        if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET)
+            continue;
+        const auto address = reinterpret_cast<const sockaddr_in *>(entry->ifa_addr)->sin_addr.s_addr;
+        assigned = assigned || address == requested.s_addr;
+        // Linux permits loopback aliases inside its assigned loopback subnet without listing
+        // each address separately (e.g. 127.0.0.6 with 127.0.0.1/8). Confirm binding below.
+        if ((entry->ifa_flags & IFF_LOOPBACK) && (ntohl(requested.s_addr) >> 24) == 127 && entry->ifa_netmask)
+        {
+            const auto mask = reinterpret_cast<const sockaddr_in *>(entry->ifa_netmask)->sin_addr.s_addr;
+            assigned = assigned || (address & mask) == (requested.s_addr & mask);
+        }
+    }
+    if (!exists)
+        throw std::runtime_error(context + "does not exist" + guidance);
+    if (!up)
+        throw std::runtime_error(context + "is not up" + guidance);
+    if (!assigned)
+        throw std::runtime_error(context + "is not assigned to that interface" + guidance);
+
+    // Probe before starting any tasks: interface inspection alone cannot guarantee bindability.
+    Socket probe;
+    try
+    {
+        probe = Socket::CreateUdp4();
+        probe.bind(InetAddress(config.staticIP, 0));
+        probe.close();
+    }
+    catch (const std::exception &error)
+    {
+        probe.close();
+        throw std::runtime_error(context + "cannot bind a local UDP socket: " + error.what() + guidance);
+    }
 }
 
 static nr::ue::UeConfig *ReadConfigYaml()
@@ -562,6 +623,7 @@ int main(int argc, char **argv)
             delete g_refConfig;
             return 0;
         }
+        CheckWifiNetwork(*g_refConfig);
     }
     catch (const std::runtime_error &e)
     {
@@ -572,21 +634,35 @@ int main(int argc, char **argv)
     app::Initialize();
     std::cout << cons::Name << std::endl;
 
-    g_controllerTask = new UeControllerTask();
+    // Build all nodes and their sockets before starting threads, so startup failures exit cleanly.
+    try
+    {
+        g_controllerTask = new UeControllerTask();
+        if (!g_options.disableCmd)
+        {
+            g_cliServer = new app::CliServer{};
+            g_cliRespTask = new app::CliResponseTask(g_cliServer);
+        }
+
+        for (int i = 0; i < g_options.count; i++)
+        {
+            auto *config = GetConfigByUe(i);
+            auto *ue = new nr::ue::UserEquipment(config, &g_ueController, nullptr, g_cliRespTask);
+            g_ueMap.put(config->getNodeName(), ue);
+        }
+    }
+    catch (const std::exception &error)
+    {
+        std::cerr << "ERROR: UE startup failed: " << error.what() << std::endl;
+        g_ueMap.invokeForeach([](const auto &entry) { delete entry.second; });
+        delete g_cliRespTask;
+        delete g_cliServer;
+        delete g_controllerTask;
+        delete g_refConfig;
+        app::Finalize();
+        return 1;
+    }
     g_controllerTask->start();
-
-    if (!g_options.disableCmd)
-    {
-        g_cliServer = new app::CliServer{};
-        g_cliRespTask = new app::CliResponseTask(g_cliServer);
-    }
-
-    for (int i = 0; i < g_options.count; i++)
-    {
-        auto *config = GetConfigByUe(i);
-        auto *ue = new nr::ue::UserEquipment(config, &g_ueController, nullptr, g_cliRespTask);
-        g_ueMap.put(config->getNodeName(), ue);
-    }
 
     if (!g_options.disableCmd)
     {
@@ -619,5 +695,5 @@ int main(int argc, char **argv)
     delete g_cliServer;
     delete g_refConfig;
     app::Finalize();
-    return 0;
+    return app::ExitCode();
 }

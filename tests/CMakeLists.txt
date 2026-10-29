@@ -28,6 +28,9 @@ if(Python3_Interpreter_FOUND)
         add_test(NAME wifi-runtime COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wifi_runtime_test.py
             $<TARGET_FILE:nr-gnb> $<TARGET_FILE:nr-ue>)
         set_tests_properties(wifi-runtime PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "runtime;loopback")
+        add_test(NAME wifi-startup COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/wifi_startup_test.py
+            $<TARGET_FILE:nr-gnb> $<TARGET_FILE:nr-ue>)
+        set_tests_properties(wifi-startup PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "runtime;loopback")
     endif()
 endif()
 

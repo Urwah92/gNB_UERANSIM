@@ -121,6 +121,22 @@ UE a dedicated routing table. Wi-Fi `-n` greater than one is rejected; run separ
 configured instances instead. Ctrl-C/SIGTERM cleans up owned rules. SIGKILL cannot
 run cleanup; see [recovery instructions](docs/INTEGRATION.md#forced-termination-recovery).
 
+### Wi-Fi startup errors
+
+- `Cannot assign requested address`: `staticIP` must already be assigned to the UE's
+  configured `Interface`. Inspect `ip -br -4 addr` on that UE node; the program does
+  not assign interface addresses or request a cellular PDU address in Wi-Fi mode.
+  Startup now checks this before launching tasks and reports the offending fields.
+- AP firewall setup failure: first run `command -v iptables`, then inspect the
+  actual chain with `iptables -w -S UERANSIM_<gnb-id>`. Missing tools, a leftover
+  chain, and insufficient network capabilities need different fixes. The new
+  diagnostic distinguishes executable launch errors from tool exit statuses and
+  exits with status 1. It leaves any preexisting chain untouched.
+
+Root inside a container may still lack `CAP_NET_ADMIN`; the container runtime must
+grant the network administration capability for AP firewall and UE policy routing.
+Do not change the gNB ID just because the derived chain name ends in `0`.
+
 ## Mobility settings
 
 - UE `phyLocation` has equal, nonempty `x`, `y`, `z` integer arrays; gNB coordinates

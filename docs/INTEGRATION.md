@@ -63,8 +63,9 @@ counts, PSI, QFI and tunnel addresses before consuming bytes.
 
 Local verification on 2026-10-29: Ubuntu 22.04, GCC 11.4, CMake 3.22.1, Debug build.
 All binaries compiled and all 10 default CTest cases passed, including copied/moved
-build-cache regression checks. The optional Wi-Fi runtime case also passed with
-real loopback sockets and mocked network commands. The UE parser covers 23 scenarios;
+build-cache regression checks. Both optional Wi-Fi runtime and startup-failure
+cases passed (12/12 with them enabled), using loopback sockets and mocked network
+commands. The UE parser covers 23 scenarios;
 the AP parser covers 20. Codec tests also passed under AddressSanitizer and
 UndefinedBehaviorSanitizer; LeakSanitizer was unavailable under sandbox ptrace.
 SCTP development headers were extracted into ignored `.deps/sctp` for this build,
@@ -93,6 +94,20 @@ Remaining scope:
   key derivation are outside this implementation.
 - Wi-Fi requires preconfigured interfaces, forwarding and upstream routing, with
   dedicated routing tables per UE. Automated tests never change host networking.
+
+## AP startup failures
+
+The AP exits with a nonzero status if firewall setup fails. A message that
+`iptables` was not found in `PATH` means the command could not be launched;
+install it or add its executable directory to the environment used to start
+`nr-gnb`. This is different from an `iptables` command returning a nonzero exit
+code. For command failures, read the inherited command stderr and run the
+diagnostic printed in the log, such as `iptables -w -S UERANSIM_3` for the AP
+example. Check the reported cause before changing permissions or configuration.
+
+A failed chain-creation command does not prove a name collision. The AP leaves
+any preexisting chain untouched; it only cleans up a chain it successfully
+created itself.
 
 ## Forced termination recovery
 

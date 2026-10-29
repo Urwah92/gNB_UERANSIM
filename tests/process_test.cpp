@@ -27,6 +27,15 @@ void Commands(const std::string &self)
     Require(utils::RunCommand({self, "--exit-child", "0"}) == 0, "Success status changed");
     Require(utils::RunCommand({self, "--exit-child", "37"}) == 37, "Failure status changed");
     Require(utils::RunCommand({self, "--signal-child"}) == 128 + SIGTERM, "Signal status changed");
+    auto childError = utils::RunCommandDetailed({self, "--exit-child", "2"});
+    Require(childError.spawnError == 0 && childError.exitCode == 2 && childError.signal == 0,
+            "Child exit 2 was confused with an executable launch failure");
+    auto missingCommand = utils::RunCommandDetailed({"/a-nonexistent-ueransim-test-executable"});
+    Require(missingCommand.spawnError == ENOENT && missingCommand.exitCode == 0 && missingCommand.signal == 0,
+            "Missing executable did not preserve its separate spawn error");
+    auto terminated = utils::RunCommandDetailed({self, "--signal-child"});
+    Require(terminated.spawnError == 0 && terminated.signal == SIGTERM,
+            "Signal termination was not exposed separately");
     Require(utils::RunCommand({}) == EINVAL, "Empty command accepted");
     Require(utils::RunCommand({"/a-nonexistent-ueransim-test-executable"}) == ENOENT,
             "Missing executable did not report ENOENT");
